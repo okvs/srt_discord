@@ -19,6 +19,7 @@ with open("config.json") as f:
 import sys
 import re
 from datetime import datetime
+from mylog import MyLog
 
 
 class Srt():
@@ -47,9 +48,10 @@ class Srt():
         self.thread_count = thread_count
         self.is_finish = False
         self.quit_now = False
+        self.log = MyLog("srt", "INFO")
 
     async def tprint(self, msg):
-        print(f"(THREAD{self.thread_count},{id(self.thread_count)})> {msg}")
+        self.log.logger.info(f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
 
     async def waiting_click(self, click_xpath, txt=''):
         while 1:
@@ -66,9 +68,16 @@ class Srt():
         if self.start_now == 0:
             nowtime = int(datetime.now().strftime("%H%M"))
             while (nowtime > int("0425") or nowtime < int("0307")):
+                if self.quit_now is True:
+                    await self.tprint("종료합니다.")
+                    return 0
                 nowtime = int(datetime.now().strftime("%H%M"))
                 await self.tprint(f"대기중.. {nowtime}")
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)
+                if self.quit_now is True:
+                    await self.tprint("종료합니다.")
+                    return 0
+                await asyncio.sleep(30)
         options = Options()
         options.add_argument("--incognito")  # 시크릿모드
 
@@ -88,8 +97,6 @@ class Srt():
         self.driver.find_element(By.XPATH, '//*[@id="hmpgPwdCphd01"]').send_keys(self.pw)
         self.driver.find_element(By.XPATH, '//*[@id="login-form"]/fieldset/div[1]/div[1]/div[2]/div/div[2]/input').click()
 
-        if self.quit_now is True:
-            return 0
         await self.get_info(trgt_date, deptime, dep_station, des_station)
 
     async def close(self):

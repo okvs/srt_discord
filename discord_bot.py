@@ -6,26 +6,27 @@ import json
 import datetime
 import asyncio
 import time
-from srt.srt import Srt
+from srt import Srt
+from mylog import MyLog
+
 
 with open("config.json") as f:
     conf = json.load(f)
 
 now = datetime.datetime.now()
+log = MyLog("discord", "INFO")
 intents = discord.Intents.all()
 intents.members = True
 bot = commands.Bot(command_prefix='/', help_command=None, intents=intents)
-
 
 c = {'dep_station': None, 'des_station': None, 'trgt_date': None, 'start_time_min': None, 'start_time_max': None}
 station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '천안아산': 3, '오송': 4, '대전': 5, '김천구미': 6, '서대구': 7, '동대구': 8,
                 '신경주': 9, '울산': 10, '부산': 11, '공주': 12, '익산': 13, '정읍': 14, '광주송정': 15, '나주': 16, '목포': 17}
 short_station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '천안아산': 3, '대전': 5,
                       '김천구미': 6, '동대구': 8, '신경주': 9, '울산': 10, '부산': 11, '익산': 13, '광주송정': 15}
-
-
 is_running = False
 thread_cnt = 0
+srt_list = [None, None, None]
 
 
 def get_helpmsg():
@@ -35,16 +36,6 @@ def get_helpmsg():
     return embed
 
 
-class ExitView(View):
-    def __init__(self, timeout: float = 86400, msg: str = ''):
-        super().__init__(timeout=timeout)
-        self.msg = msg
-
-        btn = MyBtn(label="종료", style=discord.ButtonStyle.danger, msg=self.msg)
-        self.add_item(btn)
-        # self.stop()
-
-
 class MyBtn(Button):
     def __init__(self, style, label, msg: str = "", row: int = None, disabled: bool = False, ctx=None):
         super().__init__(style=style, label=label, row=row)
@@ -52,16 +43,15 @@ class MyBtn(Button):
         self.msg = msg
         self.disabled = disabled
         self.ctx = ctx
-        self.s = None
 
-    def is_finished_select():
+    def is_finished_select(self):
         global c
 
         if None in c.values():
             return 0
         return 1
 
-    def print_selected_info():
+    def print_selected_info(self):
         global c
         station = f"{c['dep_station']}->{c['des_station']}"
         time = f"{c['start_time_min']}~{c['start_time_max']}시"
@@ -75,7 +65,8 @@ class MyBtn(Button):
     async def callback(self, interaction: discord.Interaction):
         p_label = None
         tview = None
-        global c, is_running, thread_cnt
+        exit = False
+        global c, is_running, thread_cnt, thread_list
         if self.msg == '출발':
             if c['dep_station'] is None:
                 c['dep_station'] = self.label
@@ -90,9 +81,9 @@ class MyBtn(Button):
                 calendar_view = CalendarView(timeout=180, msg="날짜", ctx=self.ctx)
                 await self.ctx.send("날짜를 선택해주세요", view=calendar_view)
         elif self.msg == "종료":
-            thread_cnt -= 1
+            srt_list[thread_cnt-1].quit_now = True
             await interaction.response.edit_message(content=f"매크로가 종료되었습니다.", view=None, embed=None)
-            self.s.quit_now = True
+            exit = True
         elif self.msg == '날짜':
             c['trgt_date'] = self.label
             p_label = self.label
@@ -115,16 +106,26 @@ class MyBtn(Button):
         if exit is not True and self.is_finished_select():
             exitview = ExitView(msg="종료")
             await interaction.channel.send(embed=self.print_selected_info(), view=exitview)
-            self.s = Srt(thread_cnt)
-            self.s.min_time = int(c['start_time_min'])
-            deptime = str(self.s.min_time - (self.s.min_time % 2)).zfill(2) + '0000'
-            self.s.start_time = list(range(self.s.min_time, int(c['start_time_max'])+1))
-            self.s.interval = 1
-            self.s.VIP = "0"  # '2':"특실+일반실", '1':"특실", '0':"일반실"
-            self.s.start_now = 0
+            srt_list[thread_cnt-1] = Srt(thread_cnt)
+            srt_list[thread_cnt-1].min_time = int(c['start_time_min'])
+            deptime = str(srt_list[thread_cnt-1].min_time - (srt_list[thread_cnt-1].min_time % 2)).zfill(2) + '0000'
+            srt_list[thread_cnt-1].start_time = list(range(srt_list[thread_cnt-1].min_time, int(c['start_time_max'])+1))
+            srt_list[thread_cnt-1].interval = 1
+            srt_list[thread_cnt-1].VIP = "0"  # '2':"특실+일반실", '1':"특실", '0':"일반실"
+            srt_list[thread_cnt-1].start_now = 0
 
-            await self.s.start(self.s.srt_home, c['trgt_date'], deptime, c['dep_station'], c['des_station'])
+            await srt_list[thread_cnt-1].start(srt_list[thread_cnt-1].srt_home, c['trgt_date'], deptime, c['dep_station'], c['des_station'])
             thread_cnt -= 1
+            log.logger.info(f"SRT_list : {srt_list}, Thread Count : {thread_cnt}")
+
+
+class ExitView(View):
+    def __init__(self, timeout: float = 86400, msg: str = ''):
+        super().__init__(timeout=timeout)
+        self.msg = msg
+
+        btn = MyBtn(label="종료", style=discord.ButtonStyle.danger, msg=self.msg)
+        self.add_item(btn)
 
 
 class TimeView(View):
@@ -207,7 +208,7 @@ class StationView(View):
 @ bot.event
 async def on_ready():
     print(f'서버 구동중... {bot.user.name}')
-    await bot.change_presence(status=discord.Status.online, activity=discord.Game("서버구동"))
+    await bot.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.listening, name="매크로 실행은 /srt 를 입력하세요."))
 
 
 @ bot.event
