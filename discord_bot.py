@@ -11,7 +11,6 @@ from srt.srt import Srt
 with open("config.json") as f:
     conf = json.load(f)
 
-
 now = datetime.datetime.now()
 intents = discord.Intents.all()
 intents.members = True
