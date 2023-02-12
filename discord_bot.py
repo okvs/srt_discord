@@ -27,6 +27,7 @@ short_station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '천안아산
 is_running = False
 thread_cnt = 0
 srt_list = [None, None, None]
+default_timeout = None
 
 
 def get_helpmsg():
@@ -43,6 +44,7 @@ class MyBtn(Button):
         self.msg = msg
         self.disabled = disabled
         self.ctx = ctx
+        self.exit = False
 
     def is_finished_select(self):
         global c
@@ -65,31 +67,40 @@ class MyBtn(Button):
     async def callback(self, interaction: discord.Interaction):
         p_label = None
         tview = None
-        exit = False
-        global c, is_running, thread_cnt, thread_list
+        global c, is_running, thread_cnt, srt_list
+
+        async def exit_select_menu():
+            global is_running, thread_cnt, srt_list
+            srt_list[thread_cnt-1].quit_now = True
+            await interaction.response.edit_message(content=f"매크로가 종료되었습니다.", view=None, embed=None)
+            self.exit = True
+            is_running = False
+            log.logger.info(f"Thread Count : {thread_cnt} 종료")
+
         if self.msg == '출발':
             if c['dep_station'] is None:
                 c['dep_station'] = self.label
                 p_label = self.label
                 tview = StationView(msg="출발", station=short_station_dict, ctx=self.ctx)
                 await interaction.response.edit_message(content=f"출발역 : {p_label}\n도착역을 선택해주세요.", view=tview)
+                tview.disable_timeout()
             else:
                 c['des_station'] = self.label
                 p_label = self.label
                 tview = StationView(msg="도착", station=short_station_dict, ctx=self.ctx)
                 await interaction.response.edit_message(content=f"목적지 선택완료", view=tview)
-                calendar_view = CalendarView(timeout=180, msg="날짜", ctx=self.ctx)
+                tview.disable_timeout()
+                calendar_view = CalendarView(msg="날짜", ctx=self.ctx)
                 await self.ctx.send("날짜를 선택해주세요", view=calendar_view)
         elif self.msg == "종료":
-            srt_list[thread_cnt-1].quit_now = True
-            await interaction.response.edit_message(content=f"매크로가 종료되었습니다.", view=None, embed=None)
-            exit = True
+            await exit_select_menu()
         elif self.msg == '날짜':
             c['trgt_date'] = self.label
             p_label = self.label
             tview = CalendarView(msg="날짜", ctx=self.ctx)
             await interaction.response.edit_message(content=f"날짜 선택완료", view=tview)
-            mintime_view = TimeView(timeout=180, msg="min시간", ctx=self.ctx)
+            tview.disable_timeout()
+            mintime_view = TimeView(timeout=100, msg="min시간", ctx=self.ctx)
             await self.ctx.send("최소~최대 출발시간을 차례로 선택해주세요", view=mintime_view)
         elif self.msg == 'min시간':
             if c['start_time_min'] is None:
@@ -97,13 +108,15 @@ class MyBtn(Button):
                 p_label = self.label
                 tview = TimeView(msg="min시간", ctx=self.ctx)
                 await interaction.response.edit_message(content=f"최소출발시간 : {p_label}, 최대출발시간을 선택해주세요.", view=tview)
+                tview.disable_timeout()
             else:
                 c['start_time_max'] = self.label
                 p_label = "max시간"
                 tview = TimeView(msg="max시간", ctx=self.ctx)
                 await interaction.response.edit_message(content=f"시간 선택완료", view=tview)
+                tview.disable_timeout()
                 is_running = False
-        if exit is not True and self.is_finished_select():
+        if self.exit is not True and self.is_finished_select():
             exitview = ExitView(msg="종료")
             await interaction.channel.send(embed=self.print_selected_info(), view=exitview)
             srt_list[thread_cnt-1] = Srt(thread_cnt)
@@ -120,7 +133,7 @@ class MyBtn(Button):
 
 
 class ExitView(View):
-    def __init__(self, timeout: float = 86400, msg: str = ''):
+    def __init__(self, timeout=None, msg: str = ''):
         super().__init__(timeout=timeout)
         self.msg = msg
 
@@ -129,7 +142,7 @@ class ExitView(View):
 
 
 class TimeView(View):
-    def __init__(self, timeout: float = 180, msg: str = '', ctx=None):
+    def __init__(self, timeout: float = default_timeout, msg: str = '', ctx=None):
         super().__init__(timeout=timeout)
         self.msg = msg
         global c
@@ -149,9 +162,19 @@ class TimeView(View):
                     btn = MyBtn(label=x, style=discord.ButtonStyle.grey, msg=self.msg, ctx=self.ctx)
                 self.add_item(btn)
 
+    def disable_timeout(self):
+        self.timeout = None
+
+    # async def on_timeout(self) -> None:
+    #     await self.ctx.send(content=f"시간초과로 매크로가 종료되었습니다. /srt를 다시 입력하세요.", view=None, embed=None)
+    #     global is_running
+    #     self.disable_timeout()
+    #     is_running = False
+    #     return await super().on_timeout()
+
 
 class CalendarView(View):
-    def __init__(self, timeout: float = 180, msg: str = '', ctx=None):
+    def __init__(self, timeout: float = default_timeout, msg: str = '', ctx=None):
         super().__init__(timeout=timeout)
         self.msg = msg
         global c
@@ -179,9 +202,19 @@ class CalendarView(View):
                 prev_month = cur_month
                 self.add_item(btn)
 
+    def disable_timeout(self):
+        self.timeout = None
+
+    # async def on_timeout(self) -> None:
+    #     await self.ctx.send(content=f"시간초과로 매크로가 종료되었습니다. /srt를 다시 입력하세요.", view=None, embed=None)
+    #     global is_running
+    #     self.disable_timeout()
+    #     is_running = False
+    #     return await super().on_timeout()
+
 
 class StationView(View):
-    def __init__(self, timeout: float = 180, msg: str = '', station: dict = {}, ctx=None):
+    def __init__(self, timeout: float = default_timeout, msg: str = '', station: dict = {}, ctx=None):
         super().__init__(timeout=timeout)
         self.station_dict = station
         self.msg = msg
@@ -204,17 +237,21 @@ class StationView(View):
                     btn = MyBtn(label=x, style=discord.ButtonStyle.grey, msg=self.msg, row=rows, ctx=self.ctx)
                 self.add_item(btn)
 
+    def disable_timeout(self):
+        self.timeout = None
+
+    # async def on_timeout(self) -> None:
+    #     await self.ctx.send(content=f"시간초과로 매크로가 종료되었습니다. /srt를 다시 입력하세요.", view=None, embed=None)
+    #     global is_running
+    #     is_running = False
+    #     self.disable_timeout()
+    #     return await super().on_timeout()
+
 
 @ bot.event
 async def on_ready():
     print(f'서버 구동중... {bot.user.name}')
     await bot.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.listening, name="매크로 실행은 /srt 를 입력하세요."))
-
-
-@ bot.event
-async def on_member_join(member):
-    channel = bot.get_channel(conf['CH_ID'])
-    await channel.send(content=f"{member}님, {member.server}에 오신것을 환영합니다.", embed=get_helpmsg())
 
 
 @ bot.command()
@@ -235,7 +272,9 @@ async def srt(ctx):
         is_running = True
         thread_cnt += 1
 
-        departure_view = StationView(timeout=180, msg="출발", station=short_station_dict, ctx=ctx)
+        departure_view = StationView(timeout=None, msg="출발", station=short_station_dict, ctx=ctx)
         await ctx.reply("SRT 매크로를 시작합니다.\n출발, 도착역을 차례로선택해주세요", view=departure_view)
 
-bot.run(conf['TOKEN'])
+
+if __name__ == "__main__":
+    bot.run(conf['TOKEN'])
