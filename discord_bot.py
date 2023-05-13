@@ -28,6 +28,7 @@ is_running = False
 thread_cnt = 0
 srt_list = [None, None, None]
 default_timeout = None
+start_now = 0
 
 
 def get_helpmsg():
@@ -125,7 +126,7 @@ class MyBtn(Button):
             srt_list[thread_cnt-1].start_time = list(range(srt_list[thread_cnt-1].min_time, int(c['start_time_max'])+1))
             srt_list[thread_cnt-1].interval = 1
             srt_list[thread_cnt-1].VIP = "0"  # '2':"특실+일반실", '1':"특실", '0':"일반실"
-            srt_list[thread_cnt-1].start_now = 0
+            srt_list[thread_cnt-1].start_now = start_now
 
             await srt_list[thread_cnt-1].start(srt_list[thread_cnt-1].srt_home, c['trgt_date'], deptime, c['dep_station'], c['des_station'])
             thread_cnt -= 1
@@ -180,10 +181,16 @@ class CalendarView(View):
         global c
         self.ctx = ctx
 
+        now = datetime.datetime.now()
+
         if c['trgt_date'] is not None:
-            c['trgt_date_txt'] = str(now.strftime("%m"))+"월 "+c['trgt_date']
+            t_offset = 0
+            if now.strftime("%d") > c['trgt_date']:
+                t_offset = 20  # for next month
+            cur_time = (now + datetime.timedelta(days=t_offset))
+            c['trgt_date_txt'] = str(cur_time.strftime("%m"))+"월 "+c['trgt_date']
             trgt_date = c['trgt_date'].split("일")[0]
-            c['trgt_date'] = str(now.strftime("%Y%m"))+trgt_date
+            c['trgt_date'] = str(cur_time.strftime("%Y%m"))+trgt_date
             btn = MyBtn(label=c['trgt_date_txt'], style=discord.ButtonStyle.green, msg=self.msg, disabled=True, ctx=self.ctx)
             self.add_item(btn)
         else:
