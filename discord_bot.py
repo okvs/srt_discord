@@ -70,10 +70,13 @@ class MyBtn(Button):
         tview = None
         global c, is_running, thread_cnt, srt_list
 
-        async def exit_select_menu():
+        async def exit_select_menu(done=0):
             global is_running, thread_cnt, srt_list
             srt_list[thread_cnt-1].quit_now = True
-            await interaction.response.edit_message(content=f"매크로가 종료되었습니다.", view=None, embed=None)
+            if done==999: #TODO
+                await interaction.response.edit_message(content=f"매크로 진행이 완료되었습니다.", view=None, embed=None) #TODO response말고 그냥 edit메세지로 해야됨
+            else:
+                await interaction.response.edit_message(content=f"매크로가 종료되었습니다.", view=None, embed=None)
             self.exit = True
             is_running = False
             log.logger.info(f"Thread Count : {thread_cnt} 종료")
@@ -91,14 +94,18 @@ class MyBtn(Button):
                 tview = StationView(msg="도착", station=short_station_dict, ctx=self.ctx)
                 await interaction.response.edit_message(content=f"목적지 선택완료", view=tview)
                 tview.disable_timeout()
-                calendar_view = CalendarView(msg="날짜", ctx=self.ctx)
+                calendar_view = CalendarView(msg="날짜", ctx=self.ctx, next=0)
                 await self.ctx.send("날짜를 선택해주세요", view=calendar_view)
-        elif self.msg == "종료":
+        elif self.msg == "취소":
             await exit_select_menu()
+        elif self.msg == 'next':
+            tview = CalendarView(msg="날짜", ctx=self.ctx, next=1)
+            await interaction.response.edit_message(content=f"다음날짜선택", view=tview)
+            tview.disable_timeout()
         elif self.msg == '날짜':
             c['trgt_date'] = self.label
             p_label = self.label
-            tview = CalendarView(msg="날짜", ctx=self.ctx)
+            tview = CalendarView(msg="날짜", ctx=self.ctx, next=0)
             await interaction.response.edit_message(content=f"날짜 선택완료", view=tview)
             tview.disable_timeout()
             mintime_view = TimeView(timeout=100, msg="min시간", ctx=self.ctx)
@@ -115,10 +122,11 @@ class MyBtn(Button):
                 p_label = "max시간"
                 tview = TimeView(msg="max시간", ctx=self.ctx)
                 await interaction.response.edit_message(content=f"시간 선택완료", view=tview)
+                log.logger.info(f"Thread Count : {thread_cnt}, {c['dep_station']} ~ {c['des_station']},  {c['trgt_date']}, {c['start_time_min']}~{c['start_time_max']}")
                 tview.disable_timeout()
                 is_running = False
         if self.exit is not True and self.is_finished_select():
-            exitview = ExitView(msg="종료")
+            exitview = ExitView(msg="취소")
             await interaction.channel.send(embed=self.print_selected_info(), view=exitview)
             srt_list[thread_cnt-1] = Srt(thread_cnt)
             srt_list[thread_cnt-1].min_time = int(c['start_time_min'])
@@ -129,8 +137,9 @@ class MyBtn(Button):
             srt_list[thread_cnt-1].start_now = start_now
 
             await srt_list[thread_cnt-1].start(srt_list[thread_cnt-1].srt_home, c['trgt_date'], deptime, c['dep_station'], c['des_station'])
+            # await exit_select_menu(done=1) #TODO
             thread_cnt -= 1
-            log.logger.info(f"SRT_list : {srt_list}, Thread Count : {thread_cnt}")
+            log.logger.info(f"DONE> SRT_list : {srt_list}, Thread Count : {thread_cnt}")
 
 
 class ExitView(View):
@@ -138,7 +147,7 @@ class ExitView(View):
         super().__init__(timeout=timeout)
         self.msg = msg
 
-        btn = MyBtn(label="종료", style=discord.ButtonStyle.danger, msg=self.msg)
+        btn = MyBtn(label="취소", style=discord.ButtonStyle.danger, msg=self.msg)
         self.add_item(btn)
 
 
@@ -175,13 +184,15 @@ class TimeView(View):
 
 
 class CalendarView(View):
-    def __init__(self, timeout: float = default_timeout, msg: str = '', ctx=None):
+    def __init__(self, timeout: float = default_timeout, msg: str = '', next=0, ctx=None):
         super().__init__(timeout=timeout)
         self.msg = msg
         global c
         self.ctx = ctx
 
         now = datetime.datetime.now()
+        if next:
+            now = now + datetime.timedelta(days=9)
 
         if c['trgt_date'] is not None:
             t_offset = 0
@@ -205,9 +216,16 @@ class CalendarView(View):
                 else:
                     day = cur_time.strftime("%d일(%a)")
                     day_offset += 1
-                    btn = MyBtn(label=day, style=discord.ButtonStyle.grey, msg=self.msg, row=int(x/3), ctx=self.ctx)
+                    if x<11:
+                        btn = MyBtn(label=day, style=discord.ButtonStyle.grey, msg=self.msg, row=int(x/3), ctx=self.ctx)
+                    if next==0 and x==11:
+                        btn = MyBtn(label="다음", style=discord.ButtonStyle.grey, msg="next", row=3, ctx=self.ctx)
+                    else:
+                        btn = MyBtn(label=day, style=discord.ButtonStyle.grey, msg=self.msg, row=int(x/3), ctx=self.ctx)
+
                 prev_month = cur_month
                 self.add_item(btn)
+
 
     def disable_timeout(self):
         self.timeout = None
