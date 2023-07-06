@@ -23,7 +23,7 @@ c = {'dep_station': None, 'des_station': None, 'trgt_date': None, 'start_time_mi
 station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '천안아산': 3, '오송': 4, '대전': 5, '김천구미': 6, '서대구': 7, '동대구': 8,
                 '신경주': 9, '울산': 10, '부산': 11, '공주': 12, '익산': 13, '정읍': 14, '광주송정': 15, '나주': 16, '목포': 17}
 short_station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '천안아산': 3, '대전': 5,
-                      '김천구미': 6, '동대구': 8, '신경주': 9, '울산': 10, '부산': 11, '익산': 13, '광주송정': 15}
+                      '김천구미': 6, '동대구': 8, '신경주': 9, '울산': 10, '부산': 11, '오송': 4, '광주송정': 15}
 is_running = False
 thread_cnt = 0
 srt_list = [None, None, None]
@@ -138,7 +138,8 @@ class MyBtn(Button):
 
             await srt_list[thread_cnt-1].start(srt_list[thread_cnt-1].srt_home, c['trgt_date'], deptime, c['dep_station'], c['des_station'])
             # await exit_select_menu(done=1) #TODO
-            thread_cnt -= 1
+            if srt_list[thread_cnt-1].waiting != 1:
+                thread_cnt -= 1
             log.logger.info(f"DONE> SRT_list : {srt_list}, Thread Count : {thread_cnt}")
 
 
@@ -163,7 +164,7 @@ class TimeView(View):
                         style=discord.ButtonStyle.green,  disabled=True, ctx=self.ctx)
             self.add_item(btn)
         else:
-            for x in range(8, 23):
+            for x in range(6, 24):
                 if c['start_time_min'] == str(x):
                     btn = MyBtn(label=x, style=discord.ButtonStyle.green, msg=self.msg, ctx=self.ctx)
                 elif c['start_time_min'] is not None and int(c['start_time_min']) >= x:
