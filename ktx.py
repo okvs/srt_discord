@@ -113,7 +113,7 @@ class Ktx():
         while (self.is_finish == False):
             if cnt % 300 == 299:
                 self.driver.get(self.ktx_home)
-                self.select_menu()
+                await self.select_menu()
                 await self.tprint("처음부터 다시 시작")
             is_success = 0
             for row in self.row_list:
@@ -172,7 +172,7 @@ class Ktx():
         Select(self.driver.find_element(By.XPATH, '//*[@id="s_day"]')).select_by_value(self.day)
         Select(self.driver.find_element(By.XPATH, '//*[@id="s_hour"]')).select_by_value(self.dep_time)
         await self.waiting_and_click('//*[@id="center"]/form/div/p/a/img', "조회하기 버튼 클릭")
-        await asyncio.sleep(3)
+        await asyncio.sleep(7)
         try:
             self.driver.switch_to.alert.accept()
         except:
@@ -241,6 +241,9 @@ class Ktx():
 
     async def trying(self, row):
         elements = self.driver.find_elements(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{row}]')
+        if len(elements) < 1:
+            await self.tprint(f"elements is none {elements}")
+            return 0
         seat_info_list = elements[0].text.split()
         is_ktx = 1 if 'KTX' in seat_info_list[1] else 0
         dep_time = seat_info_list[4]
@@ -308,7 +311,7 @@ class Ktx():
             ran_time = f"{random.uniform(1.0, 2.0):.1f}"
             # ran_time = float(str(random.randint(
             #     self.interval, self.interval+2)) + '.' + str(random.randint(1, 3)))
-            await asyncio.sleep(ran_time)
+            await asyncio.sleep(float(ran_time))
             self.driver.refresh()
             await asyncio.sleep(0.1)
         return 0
