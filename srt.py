@@ -98,7 +98,7 @@ class Srt():
 
         options.add_argument(f'user-agent={userAgent}')
         self.driver = webdriver.Chrome(
-            service=Service('chromedriver.exe'), options=options)
+            service=Service('chromedriver'), options=options)
         self.driver.maximize_window()
         self.driver.get(url)
         WebDriverWait(self.driver, 30).until(ec.presence_of_element_located(
@@ -264,8 +264,7 @@ class Srt():
                         is_in_trgt = True
                         break
                 if is_in_trgt is False:
-                    print(
-                        f"row:{row}, {cur_time}시는 {self.start_time}에 없어서 패스합니다.")
+                    print(f"row:{row}, {cur_time}시는 {self.start_time}에 없어서 패스합니다.")
                     continue
                 print(f"row:{row}, {cur_time}시 도전")
                 if "예약하기" in is_success:

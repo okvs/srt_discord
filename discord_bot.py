@@ -24,8 +24,8 @@ bot = commands.Bot(command_prefix='/', help_command=None, intents=intents)
 c = {'dep_station': None, 'des_station': None, 'trgt_date': None,
      'start_time_min': None, 'start_time_max': None}
 srt_short_station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '광주송정': 5,  '김천구미': 7,
-                          '대전': 10, '동대구': 11,  '울산(통도사)': 22, '부산': 15, '신경주': 18,
-                          '오송': 21, '익산': 23, '전주': 24, '천안아산': 30, '포항': 31}
+                          '대전': 10, '동대구': 11,   '부산': 15, '전주': 24,
+                          '오송': 21, '익산': 23, '울산(통도사)': 22,'신경주': 18, '천안아산': 30, '포항': 31}
 ktx_station_dict = {'서울': 0, '용산': 1, '영등포': 2, '광명': 3,  '수원': 4,
                     '천안아산': 5, '오송': 6, '대전': 7, '김천구미': 9,
                     '동대구': 10, '경주': 11, '포항': 12, '부산': 13, '강릉': 14,
@@ -33,8 +33,8 @@ ktx_station_dict = {'서울': 0, '용산': 1, '영등포': 2, '광명': 3,  '수
                     '여수': 20}
 is_running = False
 thread_cnt = 0
-srt_list = [None, None, None, None]
-ktx_list = [None, None, None, None]
+srt_dict = {}
+ktx_dict = {}
 default_timeout = None
 start_now = 0
 cur_mode = None
@@ -48,13 +48,14 @@ def get_helpmsg():
 
 
 class MyBtn(Button):
-    def __init__(self, style, label, msg: str = "", row: int = None, disabled: bool = False, ctx=None):
+    def __init__(self, style, label, msg: str = "", row: int = None, disabled: bool = False, ctx=None, cur_thread=None):
         super().__init__(style=style, label=label, row=row)
         self.label = label
         self.msg = msg
         self.disabled = disabled
         self.ctx = ctx
         self.exit = False
+        self.cur_thread = cur_thread
 
     def is_finished_select(self):
         global c
@@ -77,14 +78,15 @@ class MyBtn(Button):
     async def callback(self, interaction: discord.Interaction):
         p_label = None
         tview = None
-        global c, is_running, thread_cnt, srt_list
+        global c, is_running, thread_cnt, srt_dict
 
         async def exit_select_menu(done=0):
-            global is_running, thread_cnt, srt_list
-            # srt_list[thread_cnt-1].quit_now = True TODO thread cnt빼면 다른거 멈추는듯
-            srt_list[thread_cnt-1] = None
-            log.logger.info(f"Thread Count : {thread_cnt} 종료")
-            thread_cnt = thread_cnt - 1
+            global is_running, thread_cnt, srt_dict
+            if thread_cnt in srt_dict:
+                srt_dict[self.cur_thread].quit_now = True
+            if thread_cnt in ktx_dict:
+                ktx_dict[self.cur_thread].quit_now = True
+            log.logger.info(f"Thread Count : {self.cur_thread} 종료")
             if done == 999:  # TODO
                 # TODO response말고 그냥 edit메세지로 해야됨
                 await interaction.response.edit_message(content=f"매크로 진행이 완료되었습니다.", view=None, embed=None)
@@ -123,11 +125,18 @@ class MyBtn(Button):
             tview.disable_timeout()
         elif self.msg == '날짜':
             c['trgt_date'] = self.label
+            today = datetime.datetime.today()
+            tomorrow = today + datetime.timedelta(days=1)
+            tomorrow_str = tomorrow.strftime("%Y%m%d")
             p_label = self.label
             tview = CalendarView(msg="날짜", ctx=self.ctx, next=0)
             await interaction.response.edit_message(content=f"날짜 선택완료", view=tview)
+            disabled_early=False
+            if c['trgt_date'] == tomorrow_str:
+                print("당장 내일 표 예매라 아침시간을 제외합니다.")
+                disabled_early=True
             tview.disable_timeout()
-            mintime_view = TimeView(timeout=100, msg="min시간", ctx=self.ctx)
+            mintime_view = TimeView(timeout=100, msg="min시간", ctx=self.ctx, disabled_early=disabled_early)
             await self.ctx.send("최소~최대 출발시간을 차례로 선택해주세요", view=mintime_view)
         elif self.msg == 'min시간':
             if c['start_time_min'] is None:
@@ -145,64 +154,58 @@ class MyBtn(Button):
                     f"Thread Count : {thread_cnt}, {c['dep_station']} ~ {c['des_station']},  {c['trgt_date']}, {c['start_time_min']}~{c['start_time_max']}")
                 tview.disable_timeout()
                 is_running = False
+                
         if self.exit is not True and self.is_finished_select():
-            exitview = ExitView(msg="취소")
+            exitview = ExitView(msg="취소", th_cnt=thread_cnt)
             await interaction.channel.send(embed=self.print_selected_info(), view=exitview)
             if "srt" in cur_mode:
-                srt_list[thread_cnt-1] = Srt(thread_cnt)
-                srt_list[thread_cnt-1].min_time = int(c['start_time_min'])
-                deptime = str(srt_list[thread_cnt-1].min_time -
-                              (srt_list[thread_cnt-1].min_time % 2)).zfill(2) + '0000'
-                srt_list[thread_cnt-1].start_time = list(
-                    range(srt_list[thread_cnt-1].min_time, int(c['start_time_max'])+1))
-                srt_list[thread_cnt-1].interval = 1
+                srt_dict[self.cur_thread] = Srt(thread_cnt)
+                srt_dict[self.cur_thread].min_time = int(c['start_time_min'])
+                deptime = str(srt_dict[self.cur_thread].min_time -
+                              (srt_dict[self.cur_thread].min_time % 2)).zfill(2) + '0000'
+                srt_dict[self.cur_thread].start_time = list(
+                    range(srt_dict[self.cur_thread].min_time, int(c['start_time_max'])+1))
+                srt_dict[self.cur_thread].interval = 1
                 # '2':"특실+일반실", '1':"특실", '0':"일반실"
-                srt_list[thread_cnt-1].VIP = "0"
-                srt_list[thread_cnt-1].start_now = start_now
-
-                is_success = await srt_list[thread_cnt-1].start(srt_list[thread_cnt-1].srt_home, c['trgt_date'], deptime, c['dep_station'], c['des_station'])
-                # TODO  srt_list[thread_cnt] 방식 바꿔야됨!! 안됐을때 다시 queue에 넣으려면,  그냥 thread num으로 dict만드는게 나을듯
-                # await exit_select_menu(done=1) #TODO
-                # if srt_list[thread_cnt-1].waiting != 1:
-                #     thread_cnt -= 1
+                srt_dict[self.cur_thread].VIP = "0"
+                srt_dict[self.cur_thread].start_now = start_now
                 log.logger.info(
-                    f"DONE> SRT_list : {srt_list}, Thread Count : {thread_cnt}")
-            else:
-                ktx_list[thread_cnt-1] = Ktx(thread_cnt)
-                ktx_list[thread_cnt-1].min_time = int(c['start_time_min'])
-                deptime = str(ktx_list[thread_cnt-1].min_time)
+                    f"DONE> srt_dict : {srt_dict}, Thread Count : {self.cur_thread}")
+        
+                is_success = await srt_dict[self.cur_thread].start(srt_dict[self.cur_thread].srt_home, c['trgt_date'], deptime, c['dep_station'], c['des_station'])
 
-                ktx_list[thread_cnt-1].start_time = list(
-                    range(ktx_list[thread_cnt-1].min_time, int(c['start_time_max'])+1))
-                ktx_list[thread_cnt-1].interval = 1
+            else:
+                ktx_dict[self.cur_thread] = Ktx(thread_cnt)
+                ktx_dict[self.cur_thread].min_time = int(c['start_time_min'])
+                deptime = str(ktx_dict[self.cur_thread].min_time)
+
+                ktx_dict[self.cur_thread].start_time = list(
+                    range(ktx_dict[self.cur_thread].min_time, int(c['start_time_max'])+1))
+                ktx_dict[self.cur_thread].interval = 1
                 # '2':"특실+일반실", '1':"특실", '0':"일반실"
-                ktx_list[thread_cnt-1].VIP = "0"
-                ktx_list[thread_cnt-1].start_now = start_now
+                ktx_dict[self.cur_thread].VIP = "0"
+                ktx_dict[self.cur_thread].start_now = start_now
                 print(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
 
-                is_success = await ktx_list[thread_cnt-1].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
-                # TODO  ktx_list[thread_cnt] 방식 바꿔야됨!! 안됐을때 다시 queue에 넣으려면,  그냥 thread num으로 dict만드는게 나을듯
-                # await exit_select_menu(done=1) #TODO
-                # if ktx_list[thread_cnt-1].waiting != 1:
-                #     thread_cnt -= 1
+                is_success = await ktx_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
                 log.logger.info(
-                    f"DONE> ktx_list : {ktx_list}, Thread Count : {thread_cnt}")
+                    f"DONE> ktx_dict : {ktx_dict}, Thread Count : {self.cur_thread}")
 
 
 class ExitView(View):
-    def __init__(self, timeout=None, msg: str = ''):
+    def __init__(self, timeout=None, msg: str = '', th_cnt=None):
         super().__init__(timeout=timeout)
         self.msg = msg
 
-        btn = MyBtn(label="취소", style=discord.ButtonStyle.danger, msg=self.msg)
+        btn = MyBtn(label="취소", style=discord.ButtonStyle.danger, msg=self.msg, cur_thread=th_cnt)
         self.add_item(btn)
 
 
 class TimeView(View):
-    def __init__(self, timeout: float = default_timeout, msg: str = '', ctx=None):
+    def __init__(self, timeout: float = default_timeout, msg: str = '', ctx=None, disabled_early=None):
         super().__init__(timeout=timeout)
         self.msg = msg
-        global c
+        global c, thread_cnt
         self.ctx = ctx
 
         if c['start_time_max'] is not None:
@@ -211,15 +214,17 @@ class TimeView(View):
             self.add_item(btn)
         else:
             for x in range(6, 24):
+                if disabled_early and x < 10:
+                    continue
                 if c['start_time_min'] == str(x):
                     btn = MyBtn(label=x, style=discord.ButtonStyle.green,
-                                msg=self.msg, ctx=self.ctx)
+                                msg=self.msg, ctx=self.ctx, cur_thread=thread_cnt)
                 elif c['start_time_min'] is not None and int(c['start_time_min']) >= x:
                     btn = MyBtn(label=x, style=discord.ButtonStyle.grey,
-                                msg=self.msg, disabled=True, ctx=self.ctx)
+                                msg=self.msg, disabled=True, ctx=self.ctx, cur_thread=thread_cnt)
                 else:
                     btn = MyBtn(label=x, style=discord.ButtonStyle.grey,
-                                msg=self.msg, ctx=self.ctx)
+                                msg=self.msg, ctx=self.ctx, cur_thread=thread_cnt)
                 self.add_item(btn)
 
     def disable_timeout(self):
