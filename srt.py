@@ -31,10 +31,10 @@ class Srt():
         self.start_time_txt = {'1': "지금바로", '0': "새벽3시"}
         self.class_type = {'2': [6, 7], '1': [6], '0': [7]}
         self.station_dic = {'수서': 0, '동탄': 1, '평택지제': 2, '광주송정': 5, '김천구미': 7, '대전': 10, '동대구': 11,
-                            '목포': 13, '부산': 15, '신경주': 18, '오송': 21, '익산': 23, '전주': 24, '천안아산': 30, '포항': 31}
+                            '울산(통도사)': 22, '부산': 15, '신경주': 18, '오송': 21, '익산': 23, '전주': 24, '천안아산': 30, '포항': 31}
         self.id = conf["SRT_ID"]
         self.pw = conf["SRT_PW"]
-        self.card_info = conf["CARD_INFO_hyundai"]
+        self.card_info = conf["CARD_INFO"]
         self.mobile = conf["MOBILE"]
         self.interval = 1
         self.start_time = []

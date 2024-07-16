@@ -149,7 +149,7 @@ class Ktx():
         self.month = dep_date[4:6]
         self.day = dep_date[6:8]
         self.time = dep_time
-        self.dep_time = dep_time
+        self.dep_time = str(dep_time).zfill(2)
         self.target_time = dep_time
         self.dep = dep
         self.des = des
