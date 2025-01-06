@@ -20,9 +20,12 @@ import sys
 import re
 from datetime import datetime
 from mylog import MyLog
+log = MyLog("srt", "INFO")
 
 
 class Srt():
+    chain_list = []
+
     def __init__(self, thread_count=None):
         self.srt_home = 'https://etk.srail.kr/main.do'
         self.payment_url = 'https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000'
@@ -38,6 +41,7 @@ class Srt():
         self.card_info = conf["CARD_INFO"]
         self.mobile = conf["MOBILE"]
         self.interval = 1
+        self.macro_run_time = {'start': '0323', 'end': '0450'}
         self.start_time = []
         self.start_now = 0
         self.min_time = 1
@@ -45,15 +49,15 @@ class Srt():
         self.VIP = '0'
         self.depature = ''
         self.destination = ''
-        self.target_time = 0
         self.thread_count = thread_count
         self.is_finish = False
         self.quit_now = False
-        self.log = MyLog("srt", "INFO")
-        self.waiting = 0
+        self.next_task = None
+        self.info_txt_for_print = ''
+        self.run_from_log = 0
 
     async def tprint(self, msg):
-        self.log.logger.info(
+        log.logger.info(
             f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
 
     async def waiting_click(self, click_xpath, txt='', quiet=1, max_cnt=999):
@@ -72,17 +76,23 @@ class Srt():
                     print(f'waiting... {txt}')
                 pass
 
-    async def start(self, trgt_date, deptime, dep_station, des_station):
+    async def start(self, trgt_date=None, deptime=None, dep_station=None, des_station=None):
+        if trgt_date is not None:
+            await self.get_info(trgt_date, deptime, dep_station, des_station)
 
         if self.start_now == 0:
             nowtime = int(datetime.now().strftime("%H%M"))
-            while (nowtime > int("0455") or nowtime < int("0323")):
+            while (nowtime > int(self.macro_run_time['end']) or nowtime < int(self.macro_run_time['start'])):
                 if self.quit_now is True:
                     await self.tprint("종료합니다.")
                     return 0
                 nowtime = int(datetime.now().strftime("%H%M"))
-                if nowtime % 3 == 0:
-                    print(f"대기중.. {nowtime:04d}")
+                if nowtime % 1 == 0:
+                    print(f"대기중.. {nowtime:04d}, {self.thread_count} : {self.info_txt_for_print}")
+                    if len(Srt.chain_list) > 0 and self.thread_count == 1:
+                        for s in Srt.chain_list:
+                            print(f"체인대기중.. {nowtime:04d}, {s.thread_count} : {s.info_txt_for_print}")
+
                 await asyncio.sleep(60)
                 if self.quit_now is True:
                     await self.tprint("종료합니다.")
@@ -114,14 +124,24 @@ class Srt():
         self.driver.find_element(
             By.XPATH, '//*[@id="login-form"]/fieldset/div[1]/div[1]/div[2]/div/div[2]/input').click()
 
-        await self.get_info(trgt_date, deptime, dep_station, des_station)
         await self.select_menu()
         while (self.is_finish == False):
             is_success = await self.trying()
+        while (len(Srt.chain_list) > 0):
+            if self == Srt.chain_list[0]:
+                break
+            await self.close()
+            await self.tprint(f"체인실행 {Srt.chain_list[0].info_txt_for_print} (대기중인 체인 : {len(Srt.chain_list)-1})")
+            await Srt.chain_list[0].start()
+            await self.tprint(f"체인삭제 {Srt.chain_list[0].info_txt_for_print}")
+            del Srt.chain_list[0]
         return is_success
 
     async def close(self):
-        await self.driver.quit()
+        try:
+            self.driver.quit()
+        except:
+            pass
 
     async def screenshot(self, slp=1):
         await self.driver.save_screenshot("tmp_srt.png")
@@ -130,11 +150,10 @@ class Srt():
     async def get_info(self, dep_date, dep_time, dep, des):
 
         self.date = dep_date
-        self.time = dep_time[0:2]
         self.dep_time = dep_time
-        self.target_time = dep_time
         self.dep = dep
         self.des = des
+        self.info_txt_for_print = f"{dep}->{des}, {dep_date}, {self.start_time}시"
 
         for s in self.station_dic.keys():
             if dep in s:
@@ -146,6 +165,11 @@ class Srt():
                 self.destination = self.station_dic[s] + 1
                 self.des = s
                 break
+
+        if self.run_from_log:
+            await self.tprint(f"재시도 : {self.info_txt_for_print}")
+        else:
+            await self.tprint(f"시도대기 : {self.info_txt_for_print}")
 
     async def select_menu(self):
         if self.quit_now is True:
@@ -180,7 +204,7 @@ class Srt():
 
     async def print_info(self):
         await self.screenshot(0)
-        await self.tprint(f"<{self.dep} => {self.des}>\n{self.date}, {self.time}시 이후 열차 시도중\
+        await self.tprint(f"<{self.dep} => {self.des}>\n{self.date}, {self.dep_time[0:2]}시 이후 열차 시도중\
             \ninterval : {self.interval}~{self.interval+1}초\n객실타입 : {self.class_type_txt[self.VIP]}")
 
     async def restart(self, url):
@@ -222,9 +246,10 @@ class Srt():
         await asyncio.sleep(1)
         await self.waiting_click('//*[@id="agreeTmp"]', "결제조건동의", max_cnt=3)
         await asyncio.sleep(2)
-        await self.waiting_click('/html/body/div[1]/div[4]/div/div[2]/form/fieldset/div[11]/div[11]/input[1]', "최종 결제 버튼", quiet=0)
+        await self.waiting_click('/html/body/div[1]/div[4]/div/div[2]/form/fieldset/div[11]/div[11]/input[1]', "최종 결제 버튼")
         await asyncio.sleep(1)
         self.driver.switch_to.alert.accept()
+        await self.tprint(f"< 결제 완료 > {self.info_txt_for_print}")
         # print("최종결제2")
         # await asyncio.sleep(10)
         # self.final_txt = self.driver.switch_to.alert.text
@@ -232,12 +257,12 @@ class Srt():
         # self.driver.switch_to.alert.accept()
 
     async def success_process(self):
-        await asyncio.sleep(3)
-        await self.screenshot()
-        await asyncio.sleep(5)
-        await self.tprint("소멸자")
+        # await asyncio.sleep(3)
+        # await self.screenshot()
+        # await asyncio.sleep(5)
+        # await self.tprint("소멸자")
         self.is_finish = True
-        self.__del__()
+        # self.__del__()
 
     async def trying(self):
         room_type = self.class_type[self.VIP]
@@ -247,7 +272,7 @@ class Srt():
             if row_list:
                 break
             else:
-                print(f"{i}초 기다립니다")
+                # print(f"{i}초 기다립니다")
                 await asyncio.sleep(i)
                 row_list = self.driver.find_elements(
                     By.CSS_SELECTOR, '#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr')
@@ -304,24 +329,28 @@ class Srt():
                         is_available_reserve_btn = self.driver.find_element(
                             By.CSS_SELECTOR, f'#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({row}) > td:nth-child(8)').text
                         if ('신청하기' in is_available_reserve_btn):
+                            await self.tprint(f'예약대기신청하기')
                             self.driver.find_element(
                                 By.XPATH, '//*[@id="result-form"]/fieldset/div[6]/table/tbody/tr[{}]/td[{}]/a'.format(row, 8)).click()
                             await asyncio.sleep(1)
                             is_success = self.driver.find_element(
                                 By.XPATH, '//*[@id="wrap"]/div[4]/div/div[1]/h2').text
-                            await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약대기 성공!")
-                            self.waiting = 1
+                            waiting_seat_type = self.driver.find_element(
+                                By.XPATH, '//*[@id="list-form2"]/fieldset/div[3]/table/tbody/tr/td[1]').text
+                            await self.tprint(f'<{waiting_seat_type} 예약대기 완료 > {self.info_txt_for_print}')
+                            # await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약대기 성공!")
 
                     except:
                         await asyncio.sleep(1)
                         is_success = self.driver.find_element(
                             By.XPATH, '//*[@id="wrap"]/div[4]/div/div[1]/h2').text
                         if "예약하기" in is_success:
-                            await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약하기 클릭 성공!")
+                            await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약하기2 클릭 성공!")
                             break
         except:
             pass
-        print(f"is_success : {is_success}")
+        if is_success != '':
+            print(f"is_success : {is_success}")
         if "예약하기" in is_success:
             try:
                 sold_out = self.driver.find_element(
@@ -333,7 +362,7 @@ class Srt():
                     await self.driver.refresh()
                     await asyncio.sleep(2)
                 else:
-                    await self.tprint("< 예매 성공 >")
+                    await self.tprint(f"< 예매 성공 > {self.info_txt_for_print}")
                     await asyncio.sleep(2)
                     try:  # 예약대기팝업
                         self.driver.find_element(
@@ -350,15 +379,18 @@ class Srt():
                 return 0
 
             try:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
+                # 이거 체크안해도 예약대기가 먹히긴함
                 info_text = self.driver.find_element(
                     By.XPATH, '//*[@id="wrap"]/div[4]/div/div[2]/div[4]').text
-                await self.tprint(f'info_text : {info_text}')
+                # await self.tprint(f'info_text : {info_text}')
                 if "예약대기" in info_text:
                     await self.waiting_click('//*[@id="agree"]', "개인정보수집동의")
                     await self.waiting_click('//*[@id="smsY"]', "SMS동의")
                     await asyncio.sleep(1)
                     self.driver.switch_to.alert.accept()
+                    waiting_seat_type = self.driver.find_element(
+                        By.XPATH, '//*[@id="list-form2"]/fieldset/div[3]/table/tbody/tr/td[1]').text
                     self.driver.find_element(
                         By.XPATH, '//*[@id="phoneNum1"]').send_keys(self.mobile[0])
                     self.driver.find_element(
@@ -381,7 +413,6 @@ class Srt():
                         await self.fill_payment1()
                     else:
                         await self.success_process()
-                        self.waiting = 0
             except:
                 pass
             self.is_finish = True
@@ -394,9 +425,8 @@ class Srt():
             await asyncio.sleep(0.1)
         if self.start_now == 0:
             nowtime = int(datetime.now().strftime("%H%M"))
-            if (nowtime > int("0455")):
+            if (nowtime > int(self.macro_run_time['end'])):
                 await self.tprint(f"{nowtime} : 새벽 매크로를 정지합니다... ")
                 await asyncio.sleep(600)
                 self.is_finish = True
                 return 0
-                await asyncio.sleep(21600)

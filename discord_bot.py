@@ -45,6 +45,8 @@ default_timeout = None
 start_now = 1
 cur_mode = None
 admin_mode = False
+tasks = []
+max_window = 4  # 한번에 띄우는 최대 창 수
 
 
 def get_helpmsg():
@@ -85,7 +87,7 @@ class MyBtn(Button):
     async def callback(self, interaction: discord.Interaction):
         p_label = None
         tview = None
-        global c, is_running, thread_cnt, srt_dict, admin_mode
+        global c, is_running, thread_cnt, srt_dict, admin_mode, max_window
 
         async def exit_select_menu(done=0):
             global is_running, thread_cnt, srt_dict
@@ -176,10 +178,15 @@ class MyBtn(Button):
                 # '2':"특실+일반실", '1':"특실", '0':"일반실"
                 srt_dict[self.cur_thread].VIP = "0"
                 srt_dict[self.cur_thread].start_now = start_now
-                log.logger.info(
-                    f"DONE> srt_dict : {srt_dict}, Thread Count : {self.cur_thread}")
-
-                is_success = await srt_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
+                if thread_cnt <= max_window:
+                    log.logger.info(f"Thread Count : {self.cur_thread}")
+                    is_success = await srt_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
+                else:
+                    log.logger.info(
+                        f"Thread Count : {self.cur_thread}라서 체인으로 실행")
+                    await srt_dict[self.cur_thread].get_info(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
+                    Srt.chain_list.append(srt_dict[self.cur_thread])
+                    # is_success = await srt_dict[self.cur_thread-max_window].set_next_task(srt_dict[self.cur_thread], c['trgt_date'], deptime, c['dep_station'], c['des_station'])
 
             else:
                 ktx_dict[self.cur_thread] = Ktx(thread_cnt)
@@ -363,8 +370,6 @@ async def srt(ctx):
 
     if is_running:
         await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
-    elif thread_cnt > 4:
-        await ctx.reply("이미 4개의 매크로가 실행중입니다.\n나중에 다시 시도해주세요", view=None)
     else:
         for k in c.keys():
             c[k] = None
@@ -392,8 +397,6 @@ async def srtx(ctx):
         return 0
     if is_running:
         await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
-    elif thread_cnt > 4:
-        await ctx.reply("이미 4개의 매크로가 실행중입니다.\n나중에 다시 시도해주세요", view=None)
     else:
         for k in c.keys():
             c[k] = None
@@ -476,9 +479,78 @@ def check_chrome_ver():
         print("크롬드라이버 버전 체크 완료")
 
 
+async def main():
+    await asyncio.gather(
+        # bot.run(conf['TOKEN']),
+        bot.start(conf['TOKEN']),
+        *tasks
+    )
+
+
 if __name__ == "__main__":
     check_chrome_ver()
 
     if len(sys.argv) > 1:
         start_now = int(sys.argv[1])
-    bot.run(conf['TOKEN'])
+
+    data_from_log_dict = {}
+    with open("srt.log", "r", encoding="utf-8") as file:
+        for line in file:
+            if "시도대기" in line:
+                matches = re.findall(r"시도대기 : (.*)시", line.strip())
+                if matches[0] not in data_from_log_dict:
+                    data_from_log_dict[matches[0]] = {'try': 1, 'success': 0, 'cancel': 0, 'finish': 0}
+                else:
+                    data_from_log_dict[matches[0]]['try'] += 1
+            elif "< 결제 완료 >" in line or " 예약대기 완료 >" in line:
+                data_from_log_dict[matches[0]]['finish'] += 1
+            elif "< 취소 >" in line:
+                data_from_log_dict[matches[0]]['cancel'] += 1
+
+    with open("srt.log", "r", encoding="utf-8") as file:
+        for line in file:
+            if "< 예매 성공 > " in line:
+                matches = re.findall(r"< 예매 성공 > (.*)시", line.strip())
+                data_from_log_dict[matches[0]]['success'] += 1
+
+    for k, v in data_from_log_dict.items():
+        if v['try'] - v['cancel'] != v['finish']:
+            if v['finish']-v['success'] != 0:
+                log.logger.info(f"총 {v['try']}건의 시도중 {v['finish']}건 성공(결제실패 {v['success']-v['finish']}건)했으므로 다시 시도합니다 {k}")
+            else:
+                log.logger.info(f"총 {v['try']}건의 시도중 {v['finish']}건 성공했으므로 다시 시도합니다 {k}")
+            matches = re.findall(r"(\S+)->(\S+), (\d+), (\[[\d, ]+\])", k)[0]
+            dep = matches[0]
+            des = matches[1]
+            dep_date = matches[2]
+            trgt_time_list = json.loads(matches[3])
+            thread_cnt += 1
+            dep_time = str(trgt_time_list[0] - (trgt_time_list[0] % 2)).zfill(2) + '0000'
+            srt_dict[thread_cnt] = Srt(thread_cnt)
+            srt_dict[thread_cnt].start_time = trgt_time_list
+            srt_dict[thread_cnt].start_now = start_now
+            srt_dict[thread_cnt].run_from_log = 1
+
+            if thread_cnt <= max_window:
+                tasks.append(srt_dict[thread_cnt].start(dep_date, dep_time, dep, des))
+            else:
+                log.logger.info(
+                    f"Thread Count : {thread_cnt}라서 체인으로 실행(run_from_log)")
+                tasks.insert(0, srt_dict[thread_cnt].get_info(dep_date, dep_time, dep, des))
+                Srt.chain_list.append(srt_dict[thread_cnt])
+            # await srt_dict[thread_cnt].start(dep_date, dep_time, dep, des)
+        elif v['try'] > 0:
+            print(f"(INFO) {k}는 {v['try']}번 발권내역이 있습니다.")
+
+    asyncio.run(main())
+
+
+# if __name__ == "__main__":
+#     check_chrome_ver()
+
+#     if len(sys.argv) > 1:
+#         start_now = int(sys.argv[1])
+
+#     # bot.run(conf['TOKEN'])
+
+#     asyncio.run(main())
