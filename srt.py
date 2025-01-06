@@ -20,7 +20,6 @@ import sys
 import re
 from datetime import datetime
 from mylog import MyLog
-import chromedriver_autoinstaller
 
 
 class Srt():
@@ -30,8 +29,10 @@ class Srt():
         self.class_type_txt = {'2': "특실+일반실", '1': "특실", '0': "일반실"}
         self.start_time_txt = {'1': "지금바로", '0': "새벽3시"}
         self.class_type = {'2': [6, 7], '1': [6], '0': [7]}
-        self.station_dic = {'수서': 0, '동탄': 1, '평택지제': 2, '광주송정': 5, '김천구미': 7, '대전': 10, '동대구': 11,
-                            '울산(통도사)': 22, '부산': 15, '신경주': 18, '오송': 21, '익산': 23, '전주': 24, '천안아산': 30, '포항': 31}
+        self.station_dic = {'수서': 0, '동탄': 1, '평택지제': 2, '창원': 28, '광주송정': 6,  '김천구미': 8,
+                            '대전': 11, '동대구': 12,   '부산': 16, '전주': 24,
+                            '오송': 21, '익산': 23, '울산(통도사)': 22,  '천안아산': 30, '포항': 31,
+                            '목포': 14, '진영': 26}
         self.id = conf["SRT_ID"]
         self.pw = conf["SRT_PW"]
         self.card_info = conf["CARD_INFO"]
@@ -44,7 +45,6 @@ class Srt():
         self.VIP = '0'
         self.depature = ''
         self.destination = ''
-        self.seat_only = 1  # 좌석, 입석+좌석
         self.target_time = 0
         self.thread_count = thread_count
         self.is_finish = False
@@ -72,10 +72,7 @@ class Srt():
                     print(f'waiting... {txt}')
                 pass
 
-    async def start(self, url, trgt_date, deptime, dep_station, des_station):
-        chrome_ver = chromedriver_autoinstaller.get_chrome_version()
-        print("current chrome version: {}".format(chrome_ver))
-        chromedriver_autoinstaller.install()
+    async def start(self, trgt_date, deptime, dep_station, des_station):
 
         if self.start_now == 0:
             nowtime = int(datetime.now().strftime("%H%M"))
@@ -98,9 +95,9 @@ class Srt():
 
         options.add_argument(f'user-agent={userAgent}')
         self.driver = webdriver.Chrome(
-            service=Service('chromedriver'), options=options)
+            service=Service('chromedriver.exe'), options=options)
         self.driver.maximize_window()
-        self.driver.get(url)
+        self.driver.get(self.srt_home)
         WebDriverWait(self.driver, 30).until(ec.presence_of_element_located(
             (By.XPATH, '//*[@id="wrap"]/div[3]/div[1]/div/a[2]')))
 
@@ -108,7 +105,7 @@ class Srt():
         await asyncio.sleep(2)
         self.driver.find_element(
             By.XPATH, '//*[@id="wrap"]/div[3]/div[1]/div/a[2]').click()
-        WebDriverWait(self.driver, 10).until(
+        WebDriverWait(self.driver, 30).until(
             ec.presence_of_element_located((By.XPATH, '//*[@id="srchDvNm01"]')))
         self.driver.find_element(
             By.XPATH, '//*[@id="srchDvNm01"]').send_keys(self.id)
@@ -164,7 +161,7 @@ class Srt():
             By.XPATH, '//*[@id="arvRsStnCd"]')).select_by_index(self.destination)
         self.driver.find_element(
             By.XPATH, '//*[@id="search-form"]/fieldset/a').click()
-        WebDriverWait(self.driver, 10).until(lambda driver: driver.current_url ==
+        WebDriverWait(self.driver, 50).until(lambda driver: driver.current_url ==
                                              "https://etk.srail.kr/hpg/hra/01/selectScheduleList.do?pageId=TK0101010000")
         only_srt = self.driver.find_element(
             By.XPATH, '//*[@id="trnGpCd300"]').send_keys(Keys.SPACE)
@@ -246,9 +243,22 @@ class Srt():
         room_type = self.class_type[self.VIP]
         row_list = self.driver.find_elements(
             By.CSS_SELECTOR, '#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr')
+        for i in range(5):
+            if row_list:
+                break
+            else:
+                print(f"{i}초 기다립니다")
+                await asyncio.sleep(i)
+                row_list = self.driver.find_elements(
+                    By.CSS_SELECTOR, '#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr')
         if not row_list:
-            print("메뉴선택부터 다시")
-            await self.waiting_click('//*[@id="search_top_tag"]/input', "다시 조회하기")
+            print("조회버튼 다시누르기")
+            recheck_success = await self.waiting_click('//*[@id="search_top_tag"]/input', "다시 조회하기", max_cnt=10)
+            if recheck_success == 0:
+                print("메뉴선택부터 다시")
+                self.driver.get(self.srt_home)
+                await self.select_menu()
+            await asyncio.sleep(10)
 
         if self.quit_now is True:
             return 0
@@ -264,9 +274,9 @@ class Srt():
                         is_in_trgt = True
                         break
                 if is_in_trgt is False:
-                    print(f"row:{row}, {cur_time}시는 {self.start_time}에 없어서 패스합니다.")
+                    # print(f"row:{row}, {cur_time}시는 {self.start_time}에 없어서 패스합니다.")
                     continue
-                print(f"row:{row}, {cur_time}시 도전")
+                # print(f"row:{row}, {cur_time}시 도전")
                 if "예약하기" in is_success:
                     break
                 for cl in range(0, len(room_type)):
@@ -274,29 +284,36 @@ class Srt():
                     if "예약하기" in is_success:
                         continue
                     try:
-                        if (self.seat_only):
-                            remain_seat_type = self.driver.find_element(
-                                By.XPATH, f'//*[@id="result-form"]/fieldset/div[6]/table/tbody/tr[{row}]/td[{room_type[cl]}]/a').text
-                            # await self.tprint(f"  버튼명 : {remain_seat_type}")
-                            print(remain_seat_type)
-                            if ('예약하기' in remain_seat_type or '신청하기' in remain_seat_type or "좌석" in remain_seat_type):
-                                self.driver.find_element(
-                                    By.XPATH, '//*[@id="result-form"]/fieldset/div[6]/table/tbody/tr[{}]/td[{}]/a'.format(row, room_type[cl])).click()
-                        else:
+                        remain_seat_type = self.driver.find_element(
+                            By.XPATH, f'//*[@id="result-form"]/fieldset/div[6]/table/tbody/tr[{row}]/td[{room_type[cl]}]/a').text
+                        # print(f"도전 : {remain_seat_type}")
+                        if (('예약하기' in remain_seat_type or '신청하기' in remain_seat_type or "좌석" in remain_seat_type) and "입석" not in remain_seat_type):
                             self.driver.find_element(
                                 By.XPATH, '//*[@id="result-form"]/fieldset/div[6]/table/tbody/tr[{}]/td[{}]/a'.format(row, room_type[cl])).click()
+                            try:
+                                self.driver.switch_to.alert.accept()
+                            except:
+                                pass
+                            await asyncio.sleep(1)
+                            is_success = self.driver.find_element(
+                                By.XPATH, '//*[@id="wrap"]/div[4]/div/div[1]/h2').text
+                            if "예약하기" in is_success:
+                                await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약하기 클릭 성공!")
+                                break
+
                         is_available_reserve_btn = self.driver.find_element(
                             By.CSS_SELECTOR, f'#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({row}) > td:nth-child(8)').text
-                        # if ('-' not in is_available_reserve_btn):
                         if ('신청하기' in is_available_reserve_btn):
                             self.driver.find_element(
                                 By.XPATH, '//*[@id="result-form"]/fieldset/div[6]/table/tbody/tr[{}]/td[{}]/a'.format(row, 8)).click()
+                            await asyncio.sleep(1)
                             is_success = self.driver.find_element(
                                 By.XPATH, '//*[@id="wrap"]/div[4]/div/div[1]/h2').text
                             await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약대기 성공!")
                             self.waiting = 1
 
                     except:
+                        await asyncio.sleep(1)
                         is_success = self.driver.find_element(
                             By.XPATH, '//*[@id="wrap"]/div[4]/div/div[1]/h2').text
                         if "예약하기" in is_success:
@@ -325,10 +342,15 @@ class Srt():
                     except:
                         pass
             except:
+                print(f"is_success : {is_success}")
                 await self.tprint("soldout html 못찾음")
+                await self.driver.refresh()
+                await asyncio.sleep(2)
+                await asyncio.sleep(3)
+                return 0
 
             try:
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
                 info_text = self.driver.find_element(
                     By.XPATH, '//*[@id="wrap"]/div[4]/div/div[2]/div[4]').text
                 await self.tprint(f'info_text : {info_text}')
@@ -346,7 +368,7 @@ class Srt():
                     await self.waiting_click('//*[@id="moveTicketList"]', "확인")
                     self.driver.switch_to.alert.accept()
                     await self.success_process()
-                elif "10분 내에 결제하지" in info_text:
+                elif "분 내에 결제하지" in info_text:
                     await self.fill_payment1()
                     await asyncio.sleep(3)
                     while "카드번호" in self.final_txt:

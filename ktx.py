@@ -21,7 +21,6 @@ import sys
 import re
 from datetime import datetime
 from mylog import MyLog
-import chromedriver_autoinstaller
 
 
 class Ktx():
@@ -58,7 +57,7 @@ class Ktx():
         self.log.logger.info(
             f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
 
-    async def waiting_and_click(self, click_xpath, txt='', quiet=1, max_cnt=99):
+    async def waiting_and_click(self, click_xpath, txt='', quiet=0, max_cnt=99):
         cnt = 0
         while 1:
             cnt += 1
@@ -75,9 +74,6 @@ class Ktx():
                 pass
 
     async def start(self, trgt_date, deptime, dep_station, des_station):
-        chrome_ver = chromedriver_autoinstaller.get_chrome_version()
-        print("current chrome version: {}".format(chrome_ver))
-        chromedriver_autoinstaller.install()
 
         if self.start_now == 0:
             nowtime = int(datetime.now().strftime("%H%M"))
@@ -119,6 +115,8 @@ class Ktx():
             for row in self.row_list:
                 if is_success == 1:
                     break
+                # todo! row is only 1
+
                 is_success = await self.trying(row)
             cnt += 1
         return is_success
@@ -258,14 +256,24 @@ class Ktx():
             try:
                 self.driver.switch_to.frame(0)
                 await self.waiting_and_click('/html/body/div/div[2]/p[3]/a', "산천 팝업창", max_cnt=3)
-                # self.driver.switch_to.default_content()
+                print("산천팝업")
+                self.driver.switch_to.default_content()
+                print("산천팝업 디폴트")
             except:
                 await self.tprint("산천 팝업창이 안떠서 팝업창해제를 스킵합니다")
                 pass
             try:
+                print("클릭시작")
+                await asyncio.sleep(1)
                 self.driver.switch_to.alert.accept()
+                print("클릭시작1")
+                await asyncio.sleep(1)
+                self.driver.switch_to.alert.accept()
+                print("클릭시작2")
+                await asyncio.sleep(1)
                 self.driver.switch_to.alert.accept()
             except:
+                print("클릭패스")
                 pass
             await asyncio.sleep(2)
 

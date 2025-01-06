@@ -10,7 +10,11 @@ import time
 from srt import Srt
 from ktx import Ktx
 from mylog import MyLog
-
+import chromedriver_autoinstaller
+import requests
+from bs4 import BeautifulSoup
+import re
+import subprocess
 
 with open("config.json") as f:
     conf = json.load(f)
@@ -23,9 +27,11 @@ bot = commands.Bot(command_prefix='/', help_command=None, intents=intents)
 
 c = {'dep_station': None, 'des_station': None, 'trgt_date': None,
      'start_time_min': None, 'start_time_max': None}
-srt_short_station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '광주송정': 5,  '김천구미': 7,
-                          '대전': 10, '동대구': 11,   '부산': 15, '전주': 24,
-                          '오송': 21, '익산': 23, '울산(통도사)': 22,'신경주': 18, '천안아산': 30, '포항': 31}
+srt_short_station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '창원': 28, '광주송정': 6,  '김천구미': 8,
+                          '대전': 11, '동대구': 12,   '부산': 16, '전주': 24,
+                          '오송': 21, '익산': 23, '울산(통도사)': 22,  '천안아산': 30, '포항': 31,
+                          '목포': 14, '진영': 26}
+
 ktx_station_dict = {'서울': 0, '용산': 1, '영등포': 2, '광명': 3,  '수원': 4,
                     '천안아산': 5, '오송': 6, '대전': 7, '김천구미': 9,
                     '동대구': 10, '경주': 11, '포항': 12, '부산': 13, '강릉': 14,
@@ -36,8 +42,9 @@ thread_cnt = 0
 srt_dict = {}
 ktx_dict = {}
 default_timeout = None
-start_now = 0
+start_now = 1
 cur_mode = None
+admin_mode = False
 
 
 def get_helpmsg():
@@ -78,7 +85,7 @@ class MyBtn(Button):
     async def callback(self, interaction: discord.Interaction):
         p_label = None
         tview = None
-        global c, is_running, thread_cnt, srt_dict
+        global c, is_running, thread_cnt, srt_dict, admin_mode
 
         async def exit_select_menu(done=0):
             global is_running, thread_cnt, srt_dict
@@ -131,10 +138,10 @@ class MyBtn(Button):
             p_label = self.label
             tview = CalendarView(msg="날짜", ctx=self.ctx, next=0)
             await interaction.response.edit_message(content=f"날짜 선택완료", view=tview)
-            disabled_early=False
-            if c['trgt_date'] == tomorrow_str:
+            disabled_early = False
+            if c['trgt_date'] == tomorrow_str and admin_mode == False:
                 print("당장 내일 표 예매라 아침시간을 제외합니다.")
-                disabled_early=True
+                disabled_early = True
             tview.disable_timeout()
             mintime_view = TimeView(timeout=100, msg="min시간", ctx=self.ctx, disabled_early=disabled_early)
             await self.ctx.send("최소~최대 출발시간을 차례로 선택해주세요", view=mintime_view)
@@ -154,7 +161,7 @@ class MyBtn(Button):
                     f"Thread Count : {thread_cnt}, {c['dep_station']} ~ {c['des_station']},  {c['trgt_date']}, {c['start_time_min']}~{c['start_time_max']}")
                 tview.disable_timeout()
                 is_running = False
-                
+
         if self.exit is not True and self.is_finished_select():
             exitview = ExitView(msg="취소", th_cnt=thread_cnt)
             await interaction.channel.send(embed=self.print_selected_info(), view=exitview)
@@ -171,8 +178,8 @@ class MyBtn(Button):
                 srt_dict[self.cur_thread].start_now = start_now
                 log.logger.info(
                     f"DONE> srt_dict : {srt_dict}, Thread Count : {self.cur_thread}")
-        
-                is_success = await srt_dict[self.cur_thread].start(srt_dict[self.cur_thread].srt_home, c['trgt_date'], deptime, c['dep_station'], c['des_station'])
+
+                is_success = await srt_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
 
             else:
                 ktx_dict[self.cur_thread] = Ktx(thread_cnt)
@@ -242,7 +249,7 @@ class CalendarView(View):
     def __init__(self, timeout: float = default_timeout, msg: str = '', next=0, ctx=None):
         super().__init__(timeout=timeout)
         self.msg = msg
-        global c, start_now
+        global c, start_now, admin_mode
         self.ctx = ctx
 
         now = datetime.datetime.now()
@@ -264,6 +271,9 @@ class CalendarView(View):
         else:
             prev_month = 0
             day_offset = 1 - start_now
+            if admin_mode:
+                day_offset = 0
+                start_now = 1
             for x in range(0, 12):
                 cur_time = (now + datetime.timedelta(days=day_offset))
                 cur_month = int(cur_time.strftime("%m"))
@@ -337,7 +347,7 @@ class StationView(View):
 @ bot.event
 async def on_ready():
     print(f'서버 구동중... {bot.user.name}')
-    await bot.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.listening, name="매크로 실행은 /srt 를 입력하세요."))
+    await bot.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.listening, name="매크로 실행은 /srt 또는 /ktx를 입력하세요."))
 
 
 @ bot.command()
@@ -348,6 +358,38 @@ async def help(ctx):
 @ bot.command()
 async def srt(ctx):
     global c, is_running, thread_cnt, cur_mode
+    author = ctx.author
+    author_name = author.name
+
+    if is_running:
+        await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
+    elif thread_cnt > 4:
+        await ctx.reply("이미 4개의 매크로가 실행중입니다.\n나중에 다시 시도해주세요", view=None)
+    else:
+        for k in c.keys():
+            c[k] = None
+        is_running = True
+        thread_cnt += 1
+        cur_mode = "srt"
+
+        departure_view = StationView(
+            timeout=None, msg="출발", station=srt_short_station_dict, ctx=ctx)
+        await ctx.reply("SRT 매크로를 시작합니다.\n출발, 도착역을 차례로선택해주세요", view=departure_view)
+
+
+@ bot.command()
+async def srtx(ctx):
+    global c, is_running, thread_cnt, cur_mode, admin_mode
+    author = ctx.author
+    author_name = author.name
+    admin_mode = 0
+    print(f"이름 : {author_name}")
+
+    if str(author_name) == 'smin312':
+        admin_mode = 1
+        print("관리자 모드로 실행합니다.")
+    else:
+        return 0
     if is_running:
         await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
     elif thread_cnt > 4:
@@ -366,7 +408,10 @@ async def srt(ctx):
 
 @ bot.command()
 async def ktx(ctx):
-    global c, is_running, thread_cnt, cur_mode
+    global c, is_running, thread_cnt, cur_mode, admin_mode
+    author = ctx.author
+    author_name = author.name
+
     if is_running:
         await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
     elif thread_cnt > 4:
@@ -382,7 +427,58 @@ async def ktx(ctx):
             timeout=None, msg="출발", station=ktx_station_dict, ctx=ctx)
         await ctx.reply("KTX 매크로를 시작합니다.\n출발, 도착역을 차례로선택해주세요", view=departure_view)
 
+
+@ bot.command()
+async def ktxx(ctx):
+    global c, is_running, thread_cnt, cur_mode, admin_mode
+    author = ctx.author
+    author_name = author.name
+    admin_mode = 0
+    print(f"이름 : {author_name}")
+    if str(author_name) == 'smin312':
+        admin_mode = 1
+        print("관리자 모드로 실행합니다.")
+    else:
+        return 0
+    if is_running:
+        await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
+    elif thread_cnt > 4:
+        await ctx.reply("이미 4개의 매크로가 실행중입니다.\n나중에 다시 시도해주세요", view=None)
+    else:
+        for k in c.keys():
+            c[k] = None
+        is_running = True
+        thread_cnt += 1
+        cur_mode = "ktx"
+
+        departure_view = StationView(
+            timeout=None, msg="출발", station=ktx_station_dict, ctx=ctx)
+        await ctx.reply("KTX 매크로를 시작합니다.\n출발, 도착역을 차례로선택해주세요", view=departure_view)
+
+
+def check_chrome_ver():
+    latest_chrome_ver_url = "https://googlechromelabs.github.io/chrome-for-testing/"
+    response = requests.get(latest_chrome_ver_url)
+    soup = BeautifulSoup(response.content, "html.parser")
+    latest_chrome_ver = re.search(r"Stable\S+<code>([\d\.]+)</code>", str(soup)).group(1)
+
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    print(f"c:\Workspace\chromedriver.exe")
+    result = subprocess.run([f"chromedriver.exe", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    cur_chrome_ver = result.stdout.strip().split()[-2]
+
+    if cur_chrome_ver[:3] != latest_chrome_ver[:3]:
+        print("@"*1000)
+        print(f"Plz Update Chrome Version {cur_chrome_ver} -> {latest_chrome_ver}")
+        print("@"*1000)
+    else:
+        print("크롬드라이버 버전 체크 완료")
+
+
 if __name__ == "__main__":
+    check_chrome_ver()
+
     if len(sys.argv) > 1:
         start_now = int(sys.argv[1])
     bot.run(conf['TOKEN'])
