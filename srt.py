@@ -58,7 +58,8 @@ class Srt():
 
     async def tprint(self, msg):
         log.logger.info(
-            f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
+            # f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
+            f"(THREAD{self.thread_count})> {msg}")
 
     async def waiting_click(self, click_xpath, txt='', quiet=1, max_cnt=999):
         cnt = 0
@@ -88,10 +89,14 @@ class Srt():
                     return 0
                 nowtime = int(datetime.now().strftime("%H%M"))
                 if nowtime % 1 == 0:
-                    print(f"대기중.. {nowtime:04d}, {self.thread_count} : {self.info_txt_for_print}")
+                    await asyncio.sleep(self.thread_count+3)
+                    print(f"({nowtime:04d}) SRT 대기중 {self.thread_count} : {self.info_txt_for_print}")
                     if len(Srt.chain_list) > 0 and self.thread_count == 1:
+                        await asyncio.sleep(4)
+                        if nowtime < 300:  # 3시전이면
+                            Srt.chain_list = sorted(Srt.chain_list, key=lambda x: datetime.strptime(x.date, "%Y%m%d"))
                         for s in Srt.chain_list:
-                            print(f"체인대기중.. {nowtime:04d}, {s.thread_count} : {s.info_txt_for_print}")
+                            print(f"({nowtime:04d}) SRT 체인대기중 {s.thread_count} : {s.info_txt_for_print}")
 
                 await asyncio.sleep(60)
                 if self.quit_now is True:
@@ -139,7 +144,7 @@ class Srt():
 
     async def close(self):
         try:
-            self.driver.quit()
+            await self.driver.quit()
         except:
             pass
 
@@ -174,13 +179,13 @@ class Srt():
     async def select_menu(self):
         if self.quit_now is True:
             return 0
-        time.sleep(5)
+        await asyncio.sleep(5)
         # self.driver.switch_to.window(self.driver.window_handles[-1])
         # self.driver.close()
         # self.driver.switch_to.window(self.driver.window_handles[-1])
         Select(self.driver.find_element(
             By.XPATH, '//*[@id="dptRsStnCd"]')).select_by_index(self.depature)
-        time.sleep(1)
+        await asyncio.sleep(1)
         Select(self.driver.find_element(
             By.XPATH, '//*[@id="arvRsStnCd"]')).select_by_index(self.destination)
         self.driver.find_element(
@@ -189,7 +194,7 @@ class Srt():
                                              "https://etk.srail.kr/hpg/hra/01/selectScheduleList.do?pageId=TK0101010000")
         only_srt = self.driver.find_element(
             By.XPATH, '//*[@id="trnGpCd300"]').send_keys(Keys.SPACE)
-        time.sleep(2)
+        await asyncio.sleep(2)
         Select(self.driver.find_element(
             By.XPATH, '//*[@id="dptDt"]')).select_by_value(self.date)
         Select(self.driver.find_element(

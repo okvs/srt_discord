@@ -15,10 +15,13 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import subprocess
+from to_notion import create_page
 
 with open("config.json") as f:
     conf = json.load(f)
 
+api_key = conf["NOTION_API_KEY"]  # Notion  API 키
+db_id = '1631f0291d2980de988bd6d131448157'  # 기차표 노션 페이지
 now = datetime.datetime.now()
 log = MyLog("discord", "INFO")
 intents = discord.Intents.all()
@@ -38,14 +41,16 @@ ktx_station_dict = {'서울': 0, '용산': 1, '영등포': 2, '광명': 3,  '수
                     '익산': 15, '울산': 16, '광주송정': 17, '전주': 18, '순천': 19,
                     '여수': 20}
 is_running = False
-thread_cnt = 0
+srt_thread_cnt = 0
+ktx_thread_cnt = 0
 srt_dict = {}
 ktx_dict = {}
 default_timeout = None
-start_now = 1
 cur_mode = None
 admin_mode = False
+user_name = None
 tasks = []
+start_now = 0
 max_window = 4  # 한번에 띄우는 최대 창 수
 
 
@@ -87,13 +92,13 @@ class MyBtn(Button):
     async def callback(self, interaction: discord.Interaction):
         p_label = None
         tview = None
-        global c, is_running, thread_cnt, srt_dict, admin_mode, max_window
+        global c, is_running, srt_thread_cnt, ktx_thread_cnt, srt_dict, admin_mode, max_window, user_name
 
         async def exit_select_menu(done=0):
-            global is_running, thread_cnt, srt_dict
-            if thread_cnt in srt_dict:
+            global is_running, srt_thread_cnt, ktx_thread_cnt, srt_dict
+            if srt_thread_cnt in srt_dict:
                 srt_dict[self.cur_thread].quit_now = True
-            if thread_cnt in ktx_dict:
+            if ktx_thread_cnt in ktx_dict:
                 ktx_dict[self.cur_thread].quit_now = True
             log.logger.info(f"Thread Count : {self.cur_thread} 종료")
             if done == 999:  # TODO
@@ -159,16 +164,23 @@ class MyBtn(Button):
                 p_label = "max시간"
                 tview = TimeView(msg="max시간", ctx=self.ctx)
                 await interaction.response.edit_message(content=f"시간 선택완료", view=tview)
-                log.logger.info(
-                    f"Thread Count : {thread_cnt}, {c['dep_station']} ~ {c['des_station']},  {c['trgt_date']}, {c['start_time_min']}~{c['start_time_max']}")
+                if "srt" in cur_mode:
+                    log.logger.info(
+                        f"Srt Thread Count : {srt_thread_cnt}, {c['dep_station']} ~ {c['des_station']},  {c['trgt_date']}, {c['start_time_min']}~{c['start_time_max']}")
+                else:
+                    log.logger.info(
+                        f"Ktx Thread Count : {ktx_thread_cnt}, {c['dep_station']} ~ {c['des_station']},  {c['trgt_date']}, {c['start_time_min']}~{c['start_time_max']}")
                 tview.disable_timeout()
                 is_running = False
 
         if self.exit is not True and self.is_finished_select():
-            exitview = ExitView(msg="취소", th_cnt=thread_cnt)
+            if 'srt' in cur_mode:
+                exitview = ExitView(msg="취소", th_cnt=srt_thread_cnt)
+            else:
+                exitview = ExitView(msg="취소", th_cnt=ktx_thread_cnt)
             await interaction.channel.send(embed=self.print_selected_info(), view=exitview)
             if "srt" in cur_mode:
-                srt_dict[self.cur_thread] = Srt(thread_cnt)
+                srt_dict[self.cur_thread] = Srt(srt_thread_cnt)
                 srt_dict[self.cur_thread].min_time = int(c['start_time_min'])
                 deptime = str(srt_dict[self.cur_thread].min_time -
                               (srt_dict[self.cur_thread].min_time % 2)).zfill(2) + '0000'
@@ -178,18 +190,32 @@ class MyBtn(Button):
                 # '2':"특실+일반실", '1':"특실", '0':"일반실"
                 srt_dict[self.cur_thread].VIP = "0"
                 srt_dict[self.cur_thread].start_now = start_now
-                if thread_cnt <= max_window:
-                    log.logger.info(f"Thread Count : {self.cur_thread}")
+                if len(srt_dict[self.cur_thread].start_time) > 1:
+                    notion_time = f"{srt_dict[self.cur_thread].start_time[0]}-{srt_dict[self.cur_thread].start_time[-1]}"
+                else:
+                    notion_time = f"{srt_dict[self.cur_thread].start_time[0]}"
+                to_notion_data = {'이름': user_name,
+                                  '출발역': c['dep_station'],
+                                  '도착역': c['des_station'],
+                                  '날짜': f"{c['trgt_date'][:4]}-{c['trgt_date'][4:6]}-{c['trgt_date'][6:]}",
+                                  '시간': notion_time,
+                                  '타입': 'srt',
+                                  '좌석수': 1,
+                                  '정산': "발권 전",
+                                  '비고': '디스코드'}
+                if create_page(api_key, db_id, to_notion_data) == 200:
+                    log.logger.info(f"노션 등록 완료 : {to_notion_data}")
+                if srt_thread_cnt <= max_window:
+                    log.logger.info(f"Srt Thread Count : {self.cur_thread}")
                     is_success = await srt_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
                 else:
                     log.logger.info(
                         f"Thread Count : {self.cur_thread}라서 체인으로 실행")
                     await srt_dict[self.cur_thread].get_info(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
                     Srt.chain_list.append(srt_dict[self.cur_thread])
-                    # is_success = await srt_dict[self.cur_thread-max_window].set_next_task(srt_dict[self.cur_thread], c['trgt_date'], deptime, c['dep_station'], c['des_station'])
 
             else:
-                ktx_dict[self.cur_thread] = Ktx(thread_cnt)
+                ktx_dict[self.cur_thread] = Ktx(ktx_thread_cnt)
                 ktx_dict[self.cur_thread].min_time = int(c['start_time_min'])
                 deptime = str(ktx_dict[self.cur_thread].min_time)
 
@@ -199,11 +225,29 @@ class MyBtn(Button):
                 # '2':"특실+일반실", '1':"특실", '0':"일반실"
                 ktx_dict[self.cur_thread].VIP = "0"
                 ktx_dict[self.cur_thread].start_now = start_now
-                print(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
-
-                is_success = await ktx_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
-                log.logger.info(
-                    f"DONE> ktx_dict : {ktx_dict}, Thread Count : {self.cur_thread}")
+                if c['start_time_min'] == c['start_time_max']:
+                    notion_time = c['start_time_min']
+                else:
+                    notion_time = f"{c['start_time_min']}-{c['start_time_max']}"
+                to_notion_data = {'이름': user_name,
+                                  '출발역': c['dep_station'],
+                                  '도착역': c['des_station'],
+                                  '날짜': f"{c['trgt_date'][:4]}-{c['trgt_date'][4:6]}-{c['trgt_date'][6:]}",
+                                  '시간': notion_time,
+                                  '타입': 'ktx',
+                                  '좌석수': 1,
+                                  '정산': "발권 전",
+                                  '비고': "디스코드"}
+                if create_page(api_key, db_id, to_notion_data) == 200:
+                    log.logger.info(f"노션 등록 완료 : {to_notion_data}")
+                if ktx_thread_cnt <= max_window:
+                    log.logger.info(f"Ktx Thread Count : {self.cur_thread}")
+                    is_success = await ktx_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
+                else:
+                    log.logger.info(
+                        f"Ktx Thread Count : {self.cur_thread}라서 체인으로 실행")
+                    await ktx_dict[self.cur_thread].get_info(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
+                    Ktx.chain_list.append(ktx_dict[self.cur_thread])
 
 
 class ExitView(View):
@@ -219,8 +263,11 @@ class TimeView(View):
     def __init__(self, timeout: float = default_timeout, msg: str = '', ctx=None, disabled_early=None):
         super().__init__(timeout=timeout)
         self.msg = msg
-        global c, thread_cnt
+        global c, srt_thread_cnt, ktx_thread_cnt
         self.ctx = ctx
+        tcnt = srt_thread_cnt
+        if 'ktx' in cur_mode:
+            tcnt = ktx_thread_cnt
 
         if c['start_time_max'] is not None:
             btn = MyBtn(label=f"{c['start_time_min']} ~ {c['start_time_max']}시",
@@ -232,13 +279,13 @@ class TimeView(View):
                     continue
                 if c['start_time_min'] == str(x):
                     btn = MyBtn(label=x, style=discord.ButtonStyle.green,
-                                msg=self.msg, ctx=self.ctx, cur_thread=thread_cnt)
+                                msg=self.msg, ctx=self.ctx, cur_thread=tcnt)
                 elif c['start_time_min'] is not None and int(c['start_time_min']) >= x:
                     btn = MyBtn(label=x, style=discord.ButtonStyle.grey,
-                                msg=self.msg, disabled=True, ctx=self.ctx, cur_thread=thread_cnt)
+                                msg=self.msg, disabled=True, ctx=self.ctx, cur_thread=tcnt)
                 else:
                     btn = MyBtn(label=x, style=discord.ButtonStyle.grey,
-                                msg=self.msg, ctx=self.ctx, cur_thread=thread_cnt)
+                                msg=self.msg, ctx=self.ctx, cur_thread=tcnt)
                 self.add_item(btn)
 
     def disable_timeout(self):
@@ -364,9 +411,10 @@ async def help(ctx):
 
 @ bot.command()
 async def srt(ctx):
-    global c, is_running, thread_cnt, cur_mode
+    global c, is_running, srt_thread_cnt, cur_mode, user_name
     author = ctx.author
     author_name = author.name
+    user_name = author.display_name
 
     if is_running:
         await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
@@ -374,7 +422,7 @@ async def srt(ctx):
         for k in c.keys():
             c[k] = None
         is_running = True
-        thread_cnt += 1
+        srt_thread_cnt += 1
         cur_mode = "srt"
 
         departure_view = StationView(
@@ -384,9 +432,10 @@ async def srt(ctx):
 
 @ bot.command()
 async def srtx(ctx):
-    global c, is_running, thread_cnt, cur_mode, admin_mode
+    global c, is_running, srt_thread_cnt, cur_mode, admin_mode, user_name
     author = ctx.author
     author_name = author.name
+    user_name = author.display_name
     admin_mode = 0
     print(f"이름 : {author_name}")
 
@@ -401,7 +450,7 @@ async def srtx(ctx):
         for k in c.keys():
             c[k] = None
         is_running = True
-        thread_cnt += 1
+        srt_thread_cnt += 1
         cur_mode = "srt"
 
         departure_view = StationView(
@@ -411,19 +460,20 @@ async def srtx(ctx):
 
 @ bot.command()
 async def ktx(ctx):
-    global c, is_running, thread_cnt, cur_mode, admin_mode
+    global c, is_running, ktx_thread_cnt, cur_mode, admin_mode, user_name
     author = ctx.author
     author_name = author.name
+    user_name = author.display_name
 
     if is_running:
         await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
-    elif thread_cnt > 4:
+    elif ktx_thread_cnt > 4:
         await ctx.reply("이미 4개의 매크로가 실행중입니다.\n나중에 다시 시도해주세요", view=None)
     else:
         for k in c.keys():
             c[k] = None
         is_running = True
-        thread_cnt += 1
+        ktx_thread_cnt += 1
         cur_mode = "ktx"
 
         departure_view = StationView(
@@ -433,9 +483,10 @@ async def ktx(ctx):
 
 @ bot.command()
 async def ktxx(ctx):
-    global c, is_running, thread_cnt, cur_mode, admin_mode
+    global c, is_running, ktx_thread_cnt, cur_mode, admin_mode, user_name
     author = ctx.author
     author_name = author.name
+    user_name = author.display_name
     admin_mode = 0
     print(f"이름 : {author_name}")
     if str(author_name) == 'smin312':
@@ -445,13 +496,13 @@ async def ktxx(ctx):
         return 0
     if is_running:
         await ctx.reply("다른분의 메뉴선택이 끝날때까지 기다렸다 다시 시도해주세요.", view=None)
-    elif thread_cnt > 4:
+    elif ktx_thread_cnt > 4:
         await ctx.reply("이미 4개의 매크로가 실행중입니다.\n나중에 다시 시도해주세요", view=None)
     else:
         for k in c.keys():
             c[k] = None
         is_running = True
-        thread_cnt += 1
+        ktx_thread_cnt += 1
         cur_mode = "ktx"
 
         departure_view = StationView(
@@ -493,54 +544,111 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         start_now = int(sys.argv[1])
 
-    data_from_log_dict = {}
+    srt_from_log_dict = {}
+    ktx_from_log_dict = {}
     with open("srt.log", "r", encoding="utf-8") as file:
         for line in file:
             if "시도대기" in line:
                 matches = re.findall(r"시도대기 : (.*)시", line.strip())
-                if matches[0] not in data_from_log_dict:
-                    data_from_log_dict[matches[0]] = {'try': 1, 'success': 0, 'cancel': 0, 'finish': 0}
+                if matches[0] not in srt_from_log_dict:
+                    srt_from_log_dict[matches[0]] = {'try': 1, 'success': 0, 'cancel': 0, 'finish': 0}
                 else:
-                    data_from_log_dict[matches[0]]['try'] += 1
-            elif "< 결제 완료 >" in line or " 예약대기 완료 >" in line:
-                data_from_log_dict[matches[0]]['finish'] += 1
+                    srt_from_log_dict[matches[0]]['try'] += 1
+            elif "< 결제 완료 >" in line or "일반실 예약대기 완료 >" in line:
+                matches = re.findall(r"완료 > (.*)시", line.strip())
+                srt_from_log_dict[matches[0]]['finish'] += 1
             elif "< 취소 >" in line:
-                data_from_log_dict[matches[0]]['cancel'] += 1
+                matches = re.findall(r"취소 > (.*)시", line.strip())
+                srt_from_log_dict[matches[0]]['cancel'] += 1
+
+    with open("ktx.log", "r", encoding="utf-8") as file:
+        for line in file:
+            if "시도대기" in line:
+                matches = re.findall(r"시도대기 : (.*)시", line.strip())
+                if matches[0] not in ktx_from_log_dict:
+                    ktx_from_log_dict[matches[0]] = {'try': 1, 'success': 0, 'cancel': 0, 'finish': 0}
+                else:
+                    ktx_from_log_dict[matches[0]]['try'] += 1
+            elif "< 결제 완료 >" in line or "일반실 예약대기 완료 >" in line:
+                matches = re.findall(r"완료 > (.*)시", line.strip())
+                ktx_from_log_dict[matches[0]]['finish'] += 1
+            elif "< 취소 >" in line:
+                matches = re.findall(r"취소 > (.*)시", line.strip())
+                ktx_from_log_dict[matches[0]]['cancel'] += 1
 
     with open("srt.log", "r", encoding="utf-8") as file:
         for line in file:
             if "< 예매 성공 > " in line:
                 matches = re.findall(r"< 예매 성공 > (.*)시", line.strip())
-                data_from_log_dict[matches[0]]['success'] += 1
+                srt_from_log_dict[matches[0]]['success'] += 1
 
-    for k, v in data_from_log_dict.items():
-        if v['try'] - v['cancel'] != v['finish']:
+    with open("ktx.log", "r", encoding="utf-8") as file:
+        for line in file:
+            if "< 예매 성공 > " in line:
+                matches = re.findall(r"< 예매 성공 > (.*)시", line.strip())
+                ktx_from_log_dict[matches[0]]['success'] += 1
+
+    for k, v in srt_from_log_dict.items():
+        run_cnt = 0
+        if v['try'] - v['cancel'] > v['finish']:
+            run_cnt = v['try'] - v['finish']
             if v['finish']-v['success'] != 0:
-                log.logger.info(f"총 {v['try']}건의 시도중 {v['finish']}건 성공(결제실패 {v['success']-v['finish']}건)했으므로 다시 시도합니다 {k}")
+                log.logger.info(f"(SRT) 총 {v['try']}건의 시도중 {v['finish']}건 성공(결제실패 {v['success']-v['finish']}건)했으므로 다시 시도합니다 {k}")
             else:
-                log.logger.info(f"총 {v['try']}건의 시도중 {v['finish']}건 성공했으므로 다시 시도합니다 {k}")
+                log.logger.info(f"(SRT) 총 {v['try']}건의 시도중 {v['finish']}건 성공했으므로 다시 시도합니다 {k}")
             matches = re.findall(r"(\S+)->(\S+), (\d+), (\[[\d, ]+\])", k)[0]
             dep = matches[0]
             des = matches[1]
             dep_date = matches[2]
             trgt_time_list = json.loads(matches[3])
-            thread_cnt += 1
-            dep_time = str(trgt_time_list[0] - (trgt_time_list[0] % 2)).zfill(2) + '0000'
-            srt_dict[thread_cnt] = Srt(thread_cnt)
-            srt_dict[thread_cnt].start_time = trgt_time_list
-            srt_dict[thread_cnt].start_now = start_now
-            srt_dict[thread_cnt].run_from_log = 1
+            for _ in range(run_cnt):
+                srt_thread_cnt += 1
+                dep_time = str(trgt_time_list[0] - (trgt_time_list[0] % 2)).zfill(2) + '0000'
+                srt_dict[srt_thread_cnt] = Srt(srt_thread_cnt)
+                srt_dict[srt_thread_cnt].start_time = trgt_time_list
+                srt_dict[srt_thread_cnt].start_now = start_now
+                srt_dict[srt_thread_cnt].run_from_log = 1
 
-            if thread_cnt <= max_window:
-                tasks.append(srt_dict[thread_cnt].start(dep_date, dep_time, dep, des))
-            else:
-                log.logger.info(
-                    f"Thread Count : {thread_cnt}라서 체인으로 실행(run_from_log)")
-                tasks.insert(0, srt_dict[thread_cnt].get_info(dep_date, dep_time, dep, des))
-                Srt.chain_list.append(srt_dict[thread_cnt])
-            # await srt_dict[thread_cnt].start(dep_date, dep_time, dep, des)
+                if srt_thread_cnt <= max_window:
+                    tasks.append(srt_dict[srt_thread_cnt].start(dep_date, dep_time, dep, des))
+                else:
+                    log.logger.info(
+                        f"(SRT)   Thread Count : {srt_thread_cnt}라서 체인으로 실행(run_from_log) {k}")
+                    tasks.insert(0, srt_dict[srt_thread_cnt].get_info(dep_date, dep_time, dep, des))
+                    Srt.chain_list.append(srt_dict[srt_thread_cnt])
         elif v['try'] > 0:
-            print(f"(INFO) {k}는 {v['try']}번 발권내역이 있습니다.")
+            print(f"(SRT INFO) {k}는 {v['try']}번 발권내역이 있습니다.")
+
+    for k, v in ktx_from_log_dict.items():
+        run_cnt = 0
+        if v['try'] - v['cancel'] > v['finish']:
+            run_cnt = v['try'] - v['finish']
+            if v['finish']-v['success'] != 0:
+                log.logger.info(f"(KTX) 총 {v['try']}건의 시도중 {v['finish']}건 성공(결제실패 {v['success']-v['finish']}건)했으므로 다시 시도합니다 {k}")
+            else:
+                log.logger.info(f"(KTX) 총 {v['try']}건의 시도중 {v['finish']}건 성공했으므로 다시 시도합니다 {k}")
+            matches = re.findall(r"(\S+)->(\S+), (\d+), (\[[\d, ]+\])", k)[0]
+            dep = matches[0]
+            des = matches[1]
+            dep_date = matches[2]
+            trgt_time_list = json.loads(matches[3])
+            for _ in range(run_cnt):
+                ktx_thread_cnt += 1
+                dep_time = str(trgt_time_list[0])
+                ktx_dict[ktx_thread_cnt] = Ktx(ktx_thread_cnt)
+                ktx_dict[ktx_thread_cnt].start_time = trgt_time_list
+                ktx_dict[ktx_thread_cnt].start_now = start_now
+                ktx_dict[ktx_thread_cnt].run_from_log = 1
+
+                if ktx_thread_cnt <= max_window:
+                    tasks.append(ktx_dict[ktx_thread_cnt].start(dep_date, dep_time, dep, des))
+                else:
+                    log.logger.info(
+                        f"(KTX)   Thread Count : {ktx_thread_cnt}라서 체인으로 실행(run_from_log) {k}")
+                    tasks.insert(0, ktx_dict[ktx_thread_cnt].get_info(dep_date, dep_time, dep, des))
+                    Ktx.chain_list.append(ktx_dict[ktx_thread_cnt])
+        elif v['try'] > 0:
+            print(f"(KTX INFO) {k}는 {v['try']}번 발권내역이 있습니다.")
 
     asyncio.run(main())
 

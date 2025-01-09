@@ -21,9 +21,12 @@ import sys
 import re
 from datetime import datetime
 from mylog import MyLog
+log = MyLog("ktx", "INFO")
 
 
 class Ktx():
+    chain_list = []
+
     def __init__(self, thread_count=None):
         self.ktx_home = 'https://www.letskorail.com'
         self.payment_url = 'https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000'
@@ -37,6 +40,7 @@ class Ktx():
         self.card_info = conf["CARD_INFO"]
         self.mobile = conf["MOBILE"]
         self.interval = 1
+        self.macro_run_time = {'start': '0323', 'end': '0450'}
         self.start_time = []
         self.start_now = 1
         self.min_time = 1
@@ -49,15 +53,17 @@ class Ktx():
         self.thread_count = thread_count
         self.is_finish = False
         self.quit_now = False
-        self.log = MyLog("ktx", "INFO")
         self.waiting = 0
-        self.row_list = [1]
+        self.info_txt_for_print = ''
+        self.run_from_log = 0
+        self.non_ktx_list = [["수원", "창원중앙"]]
 
     async def tprint(self, msg):
-        self.log.logger.info(
-            f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
+        log.logger.info(
+            # f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
+            f"(THREAD{self.thread_count})> {msg}")
 
-    async def waiting_and_click(self, click_xpath, txt='', quiet=0, max_cnt=99):
+    async def waiting_click(self, click_xpath, txt='', quiet=1, max_cnt=999):
         cnt = 0
         while 1:
             cnt += 1
@@ -73,17 +79,27 @@ class Ktx():
                     print(f'waiting... {txt}')
                 pass
 
-    async def start(self, trgt_date, deptime, dep_station, des_station):
+    async def start(self, trgt_date=None, deptime=None, dep_station=None, des_station=None):
+        if trgt_date is not None:
+            await self.get_info(trgt_date, deptime, dep_station, des_station)
 
         if self.start_now == 0:
             nowtime = int(datetime.now().strftime("%H%M"))
-            while (nowtime > int("0455") or nowtime < int("0300")):
+            while (nowtime > int(self.macro_run_time['end']) or nowtime < int(self.macro_run_time['start'])):
                 if self.quit_now is True:
                     await self.tprint("종료합니다.")
                     return 0
                 nowtime = int(datetime.now().strftime("%H%M"))
-                if nowtime % 3 == 0:
-                    print(f"대기중.. {nowtime:04d}")
+                if nowtime % 1 == 0:
+                    await asyncio.sleep(self.thread_count+13)
+                    print(f"({nowtime:04d}) KTX 대기중 {self.thread_count} : {self.info_txt_for_print}")
+                    if len(Ktx.chain_list) > 0 and self.thread_count == 1:
+                        await asyncio.sleep(4)
+                        if nowtime < 300:  # 3시전이면
+                            Ktx.chain_list = sorted(Ktx.chain_list, key=lambda x: datetime.strptime(x.date, "%Y%m%d"))
+                        for k in Ktx.chain_list:
+                            print(f"({nowtime:04d}) KTX 체인대기중 {k.thread_count} : {k.info_txt_for_print}")
+
                 await asyncio.sleep(60)
                 if self.quit_now is True:
                     await self.tprint("종료합니다.")
@@ -103,27 +119,22 @@ class Ktx():
         # login
         await self.login()
 
-        await self.get_info(trgt_date, deptime, dep_station, des_station)
         await self.select_menu()
-        cnt = 0
         while (self.is_finish == False):
-            if cnt % 300 == 299:
-                self.driver.get(self.ktx_home)
-                await self.select_menu()
-                await self.tprint("처음부터 다시 시작")
-            is_success = 0
-            for row in self.row_list:
-                if is_success == 1:
-                    break
-                # todo! row is only 1
-
-                is_success = await self.trying(row)
-            cnt += 1
+            is_success = await self.trying()
+        while (len(Ktx.chain_list) > 0):
+            if self == Ktx.chain_list[0]:
+                break
+            await self.close()
+            await self.tprint(f"체인실행 {Ktx.chain_list[0].info_txt_for_print} (대기중인 체인 : {len(Ktx.chain_list)-1})")
+            await Ktx.chain_list[0].start()
+            await self.tprint(f"체인삭제 {Ktx.chain_list[0].info_txt_for_print}")
+            del Ktx.chain_list[0]
         return is_success
 
     async def login(self):
         await asyncio.sleep(2)
-        await self.waiting_and_click('//*[@id="header"]/div[1]/div/ul/li[2]/a/img', "로그인 버튼 클릭")
+        await self.waiting_click('//*[@id="header"]/div[1]/div/ul/li[2]/a/img', "로그인 버튼 클릭")
         WebDriverWait(self.driver, 10).until(
             ec.presence_of_element_located((By.XPATH, '//*[@id="txtMember"]')))
         self.driver.find_element(
@@ -131,10 +142,13 @@ class Ktx():
         self.driver.find_element(
             By.XPATH, '//*[@id="txtPwd"]').send_keys(self.pw)
         await asyncio.sleep(1)
-        await self.waiting_and_click('//*[@id="loginDisplay1"]/ul/li[3]/a/img', "로그인 시도")
+        await self.waiting_click('//*[@id="loginDisplay1"]/ul/li[3]/a/img', "로그인 시도")
 
     async def close(self):
-        await self.driver.quit()
+        try:
+            await self.driver.quit()
+        except:
+            pass
 
     async def screenshot(self, slp=1):
         await self.driver.save_screenshot("tmp_ktx.png")
@@ -151,26 +165,40 @@ class Ktx():
         self.target_time = dep_time
         self.dep = dep
         self.des = des
+        self.info_txt_for_print = f"{dep}->{des}, {dep_date}, {self.start_time}시"
+        if self.run_from_log:
+            await self.tprint(f"재시도 : {self.info_txt_for_print}")
+        else:
+            await self.tprint(f"시도대기 : {self.info_txt_for_print}")
 
     async def select_menu(self):
         if self.quit_now is True:
             return 0
         await asyncio.sleep(2)
-        await self.waiting_and_click('//*[@id="header"]/div[3]/div[1]/h3/a', "승차권 예약 클릭")
+        await self.waiting_click('//*[@id="header"]/div[3]/div[1]/h3/a', "승차권 예약 클릭")
         await asyncio.sleep(2)
-        await self.waiting_and_click('//*[@id="selGoTrainRa00"]', "KTX 버튼 클릭")
-        await self.waiting_and_click('//*[@id="adjcCheckYn"]', "인접역 체크해제 클릭")
+        only_ktx = 1
+        for non in self.non_ktx_list:
+            if self.dep in non and self.des in non:
+                only_ktx = 0
+                break
+        if only_ktx:
+            await self.waiting_click('//*[@id="selGoTrainRa00"]', "KTX 버튼 클릭")
+        await self.waiting_click('//*[@id="adjcCheckYn"]', "인접역 체크해제 클릭")
         self.driver.find_element(By.XPATH, '//*[@id="start"]').clear()
         self.driver.find_element(By.XPATH, '//*[@id="get"]').clear()
         dep_station = self.driver.find_element(By.XPATH, '//*[@id="start"]').send_keys(self.dep)
         des_station = self.driver.find_element(By.XPATH, '//*[@id="get"]').send_keys(self.des)
 
         Select(self.driver.find_element(By.XPATH, '//*[@id="s_year"]')).select_by_value(self.year)
+        await asyncio.sleep(0.5)
         Select(self.driver.find_element(By.XPATH, '//*[@id="s_month"]')).select_by_value(self.month)
+        await asyncio.sleep(0.5)
         Select(self.driver.find_element(By.XPATH, '//*[@id="s_day"]')).select_by_value(self.day)
+        await asyncio.sleep(0.5)
         Select(self.driver.find_element(By.XPATH, '//*[@id="s_hour"]')).select_by_value(self.dep_time)
-        await self.waiting_and_click('//*[@id="center"]/form/div/p/a/img', "조회하기 버튼 클릭")
-        await asyncio.sleep(7)
+        await self.waiting_click('//*[@id="center"]/form/div/p/a/img', "조회하기 버튼 클릭")
+        await asyncio.sleep(5)
         try:
             self.driver.switch_to.alert.accept()
         except:
@@ -190,97 +218,77 @@ class Ktx():
         while (1):
             self.trying()
 
-    async def fill_payment1(self):
-        await self.waiting_and_click('// *[ @ id = "list-form"] / fieldset / div[11] / a[1] / span', '"결제하기" 버튼')
-        # await self.waiting_click('//*[@id="select-form"]/fieldset/div[2]/ul/li[1]/a', '신용카드')
-        await asyncio.sleep(1)
-        await self.waiting_and_click('// *[ @ id = "stlCrCrdNo14_tk_btn"] / label', '보안키패드1 해제')
-        await self.waiting_and_click('// *[ @ id = "vanPwd1_tk_btn"] / label', '보안키패드2 해제')
-        await asyncio.sleep(1)
-        sel_mon = Select(self.driver.find_element(
-            By.XPATH, '//*[@id="crdVlidTrm1M"]')).select_by_value(self.card_info["exp_month"])
-        sel_year = Select(self.driver.find_element(
-            By.XPATH, '//*[@id="crdVlidTrm1Y"]')).select_by_value(self.card_info["exp_year"])
-        # await self.waiting_click('// *[ @ id = "agree1"]', '동의 체크박스')
-        await self.waiting_and_click('// *[ @ id = "select-form"] / fieldset / div[11] / div[2] / ul / li[2] / a', '스마트폰 발권')
-        await asyncio.sleep(1)
-        self.driver.switch_to.alert.accept()
-        await asyncio.sleep(1)
-        for i in range(1, 5):
-            self.driver.find_element(
-                By.XPATH, f'// *[ @ id = "stlCrCrdNo1{i}"]').click()
-            card_num = self.driver.find_element(
-                By.XPATH, f'// *[ @ id = "stlCrCrdNo1{i}"]').send_keys(self.card_info["card_num"][i - 1])
-            await asyncio.sleep(1)
-        pw_box = self.driver.find_element(
-            By.XPATH, '// *[ @ id = "vanPwd1"]').send_keys(self.card_info["pw"])
-        await asyncio.sleep(1)
-        verif_box = self.driver.find_element(
-            By.XPATH, '//*[@id="athnVal1"]').send_keys(self.card_info['verif_code'])
-        await asyncio.sleep(1)
-        await self.waiting_and_click('//*[@id="Div_Card"]/table/tbody/tr[6]/td/input', "결제조건동의", max_cnt=3)
-        await asyncio.sleep(2)
-        await self.waiting_and_click('/html/body/div[1]/div[4]/div/div[2]/form/fieldset/div[11]/div[11]/input[1]', "최종 결제 버튼", quiet=0)
-        await asyncio.sleep(1)
-        self.driver.switch_to.alert.accept()
-        # print("최종결제2")
-        # await asyncio.sleep(10)
-        # self.final_txt = self.driver.switch_to.alert.text
-        # print(self.final_txt)
-        # self.driver.switch_to.alert.accept()
-
     async def success_process(self):
-        await asyncio.sleep(3)
-        await self.screenshot()
-        await asyncio.sleep(5)
-        await self.tprint("소멸자")
+        # await asyncio.sleep(3)
+        # await self.screenshot()
+        # await asyncio.sleep(5)
+        # await self.tprint("소멸자")
         self.is_finish = True
-        self.__del__()
+        # self.__del__()
 
-    async def trying(self, row):
-        elements = self.driver.find_elements(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{row}]')
+    async def trying(self):
+        elements = self.driver.find_elements(By.XPATH, f'//*[@id="tableResult"]/tbody/tr')
+        # elements = self.driver.find_elements(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[1]')
         if len(elements) < 1:
             await self.tprint(f"elements is none {elements}")
+            print("메뉴선택부터 다시")
+            self.driver.get(self.ktx_home)
+            await self.select_menu()
+            await asyncio.sleep(10)
             return 0
-        seat_info_list = elements[0].text.split()
-        is_ktx = 1 if 'KTX' in seat_info_list[1] else 0
-        dep_time = seat_info_list[4]
-        seat_status = self.driver.find_element(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{row}]/td[6]').accessible_name
-        if "매진" not in seat_status:  # TODO del
-            await self.tprint(seat_status)
-        else:
-            print(datetime.now(), seat_status)
-        if "예약하기" in seat_status:
-            await self.waiting_and_click(f'//*[@id="tableResult"]/tbody/tr[{row}]/td[6]/a[1]/img', f"{row}열예매버튼")
-            await self.tprint("예매 버튼 클릭!!!")
+        for i in range(len(elements)):
+            seat_info_list = elements[i].text.split()
+            if len(seat_info_list) == 0:
+                continue
+            # elements = self.driver.find_elements(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{i}]')
+            # seat_info_list = elements[0].text.split()
+            if re.search(r'\d', seat_info_list[1]):
+                seat_info_list.insert(1, "list 자리수 맞주기")
+            elif 'SRT' in seat_info_list[1]:
+                continue
+            dep_time = seat_info_list[4][:2]
+            if int(dep_time) not in self.start_time:
+                continue
+            try:
+                # seat_status = self.driver.find_element(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{}]/td[6]').accessible_name
+                grade = 5
+                if int(self.VIP) == 0:
+                    grade = 6
+                status = self.driver.find_element(
+                    By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{i+1}]/td[{grade}]/a[1]/img').get_attribute('alt')
+                if "예약하기" not in status:
+                    continue
+                self.driver.find_element(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{i+1}]/td[{grade}]/a[1]/img').click()
+            except:
+                # 매진
+                # print(f'{seat_info_list[4]}는 매진입니다')
+                continue
+
+            await self.tprint(f"< 예매 성공 > {self.info_txt_for_print}")
             try:
                 self.driver.switch_to.frame(0)
-                await self.waiting_and_click('/html/body/div/div[2]/p[3]/a', "산천 팝업창", max_cnt=3)
-                print("산천팝업")
+                await self.waiting_click('/html/body/div/div[2]/p[3]/a', "산천 팝업창", max_cnt=3)
+                # print("산천팝업")
                 self.driver.switch_to.default_content()
-                print("산천팝업 디폴트")
+                # print("산천팝업 디폴트")
             except:
-                await self.tprint("산천 팝업창이 안떠서 팝업창해제를 스킵합니다")
+                # await self.tprint("산천 팝업창이 안떠서 팝업창해제를 스킵합니다")
                 pass
             try:
-                print("클릭시작")
                 await asyncio.sleep(1)
                 self.driver.switch_to.alert.accept()
-                print("클릭시작1")
                 await asyncio.sleep(1)
                 self.driver.switch_to.alert.accept()
-                print("클릭시작2")
                 await asyncio.sleep(1)
                 self.driver.switch_to.alert.accept()
             except:
-                print("클릭패스")
                 pass
             await asyncio.sleep(2)
 
             # 팝업창 클릭 만들어야함
             # self.driver.execute_script("document.body.style.zoom = '90%'")
-            await self.waiting_and_click('//*[@id="btn_next"]', "결제하기")
-            await self.waiting_and_click('//*[@id="tabStl1"]', "신용카드 탭 클릭")
+            await self.waiting_click('//*[@id="btn_next"]', "결제하기")
+            await self.waiting_click('//*[@id="tabStl1"]', "신용카드 탭 클릭")
             await asyncio.sleep(1)
             for i in range(1, 5):
                 self.driver.find_element(
@@ -299,89 +307,35 @@ class Ktx():
             verif_box = self.driver.find_element(
                 By.XPATH, '//*[@id="Div_Card"]/table/tbody/tr[6]/td/input').send_keys(self.card_info['verif_code'])
             await asyncio.sleep(0.3)
-            await self.waiting_and_click('//*[@id="chkAgree"]', "개인정보수집동의", max_cnt=10)
+            await self.waiting_click('//*[@id="chkAgree"]', "개인정보수집동의", max_cnt=10)
             await asyncio.sleep(0.3)
-            await self.waiting_and_click('//*[@id="fnIssuing"]', "발권하기 버튼", max_cnt=10, quiet=0)
+            await self.waiting_click('//*[@id="fnIssuing"]', "발권하기 버튼", max_cnt=10, quiet=0)
             await asyncio.sleep(0.3)
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             await asyncio.sleep(0.3)
 
             cur_frame = self.driver.switch_to.frame("mainframeSaleInfo")
-            await self.waiting_and_click('//*[@id="btn_next2"]', "코레일톡 발권 버튼", max_cnt=10, quiet=0)
+            await self.waiting_click('//*[@id="btn_next2"]', "코레일톡 발권 버튼", max_cnt=10, quiet=0)
             await asyncio.sleep(2)
             self.driver.switch_to.alert.accept()
-            await self.tprint("< 예매 성공 >")
+            await self.tprint(f"< 결제 완료 > {self.info_txt_for_print}")
             await asyncio.sleep(2)
             self.is_finish = True
-            self.driver.quit()
+            # self.driver.quit()
             return 1
         else:
-            ran_time = f"{random.uniform(1.0, 2.0):.1f}"
-            # ran_time = float(str(random.randint(
-            #     self.interval, self.interval+2)) + '.' + str(random.randint(1, 3)))
-            await asyncio.sleep(float(ran_time))
+            ran_time = float(str(random.randint(
+                self.interval, self.interval+1)) + '.' + str(random.randint(1, 3)))
+            await asyncio.sleep(ran_time)
             self.driver.refresh()
             await asyncio.sleep(0.1)
-        return 0
-        # await asyncio.sleep(2)
-        # try:  # 예약대기팝업
-        #     self.driver.find_element(
-        #         By.XPATH, '/html/body/div[2]/div[3]/div/button').click()
-        #     await self.tprint("예약대기 팝업 떠서 클릭함")
-        # except:
-        #     pass
-
-        #    try:
-        #         await asyncio.sleep(3)
-        #         info_text = self.driver.find_element(
-        #             By.XPATH, '//*[@id="wrap"]/div[4]/div/div[2]/div[4]').text
-        #         await self.tprint(f'info_text : {info_text}')
-        #         if "예약대기" in info_text:
-        #             await self.waiting_and_click('//*[@id="agree"]', "개인정보수집동의")
-        #             await self.waiting_and_click('//*[@id="smsY"]', "SMS동의")
-        #             await asyncio.sleep(1)
-        #             self.driver.switch_to.alert.accept()
-        #             self.driver.find_element(
-        #                 By.XPATH, '//*[@id="phoneNum1"]').send_keys(self.mobile[0])
-        #             self.driver.find_element(
-        #                 By.XPATH, '//*[@id="phoneNum2"]').send_keys(self.mobile[1])
-        #             await self.waiting_and_click('//*[@id="diffSeatY"]', "다른차실 동의")
-        #             await asyncio.sleep(1)
-        #             await self.waiting_and_click('//*[@id="moveTicketList"]', "확인")
-        #             self.driver.switch_to.alert.accept()
-        #             await self.success_process()
-        #         elif "10분 내에 결제하지" in info_text:
-        #             await self.fill_payment1()
-        #             await asyncio.sleep(3)
-        #             while "카드번호" in self.final_txt:
-        #                 await self.tprint(f"카드번호 입력불가로 재결제 시도합니다.")
-        #                 await self.restart(self.payment_url)
-        #                 WebDriverWait(self.driver, 10).until(
-        #                     ec.presence_of_element_located((By.XPATH, '//*[@id="reserveTbl"]/tbody/tr[1]/td[10]/a')))
-        #                 self.driver.find_element(
-        #                     By.XPATH, '//*[@id="reserveTbl"]/tbody/tr[1]/td[10]/a').click()
-        #                 await self.fill_payment1()
-        #             else:
-        #                 await self.success_process()
-        #                 self.waiting = 0
-        #     except:
-        #         pass
-        #     self.is_finish = True
-        #     return 1
-        # else:
-        #     ran_time = float(str(random.randint(
-        #         self.interval, self.interval+1)) + '.' + str(random.randint(1, 3)))
-        #     await asyncio.sleep(ran_time)
-        #     self.driver.refresh()
-        #     await asyncio.sleep(0.1)
-        # if self.start_now == 0:
-        #     nowtime = int(datetime.now().strftime("%H%M"))
-        #     if (nowtime > int("0455")):
-        #         await self.tprint(f"{nowtime} : 새벽 매크로를 정지합니다... ")
-        #         await asyncio.sleep(600)
-        #         self.is_finish = True
-        #         return 0
-        #         await asyncio.sleep(21600)
+        if self.start_now == 0:
+            nowtime = int(datetime.now().strftime("%H%M"))
+            if (nowtime > int(self.macro_run_time['end'])):
+                await self.tprint(f"{nowtime} : 새벽 매크로를 정지합니다... ")
+                await asyncio.sleep(600)
+                self.is_finish = True
+                return 0
 
 
 async def main():
@@ -393,7 +347,7 @@ async def main():
             is_success = await k.start(trgt_date=sys.argv[2], deptime=sys.argv[3], dep_station="서울", des_station="진주")
             # is_success = await k.start(trgt_date=sys.argv[2], deptime=sys.argv[3], dep_station=sys.argv[4], des_station=sys.argv[5])
         else:
-            is_success = await k.start(trgt_date="20240622", deptime="08", dep_station="서울", des_station="진주")
+            is_success = await k.start(trgt_date="20250115", deptime="08", dep_station="서울", des_station="진주")
     # is_success = await k.start(trgt_date="20240623", deptime="08", dep_station="서울", des_station="진주")
 
 if __name__ == "__main__":
