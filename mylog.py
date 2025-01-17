@@ -11,7 +11,7 @@ class MyLog():
         self.logger.propagate = False
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-        rotating_handler = RotatingFileHandler(f'{name}.log', encoding='utf-8', maxBytes=104857, backupCount=10)
+        rotating_handler = RotatingFileHandler(f'{name}.log', encoding='utf-8', maxBytes=504857, backupCount=10)
         rotating_handler.setLevel(logging.INFO)
         rotating_handler.setFormatter(formatter)
         # file_handler = logging.FileHandler(f"{name}_{now.strftime('%m%d')}.log", encoding='utf-8')

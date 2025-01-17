@@ -1,3 +1,7 @@
+from mylog import MyLog
+from datetime import datetime
+import re
+import sys
 import time
 import random
 from selenium import webdriver
@@ -12,14 +16,14 @@ from selenium.webdriver.support import expected_conditions as ec
 from user_agent import generate_user_agent, generate_navigator
 import json
 import asyncio
+from to_notion import *
 
 with open("config.json") as f:
     conf = json.load(f)
 
-import sys
-import re
-from datetime import datetime
-from mylog import MyLog
+
+api_key = conf["NOTION_API_KEY"]  # Notion  API 키
+db_id = conf["NOTION_DB_ID"]
 log = MyLog("srt", "INFO")
 
 
@@ -35,7 +39,8 @@ class Srt():
         self.station_dic = {'수서': 0, '동탄': 1, '평택지제': 2, '창원': 28, '광주송정': 6,  '김천구미': 8,
                             '대전': 11, '동대구': 12,   '부산': 16, '전주': 24,
                             '오송': 21, '익산': 23, '울산(통도사)': 22,  '천안아산': 30, '포항': 31,
-                            '목포': 14, '진영': 26}
+                            '목포': 14, '진영': 26, '경주': 3, '진주': 27, '창원중앙': 29, '나주': 9,
+                            '서대구': 17, '여수EXPO': 19, '여천': 20}
         self.id = conf["SRT_ID"]
         self.pw = conf["SRT_PW"]
         self.card_info = conf["CARD_INFO"]
@@ -54,12 +59,18 @@ class Srt():
         self.quit_now = False
         self.next_task = None
         self.info_txt_for_print = ''
-        self.run_from_log = 0
+        self.notion_data = None
+        self.chain_is_running = False
+        self.age_type = 'man'
+        self.memo = ''
 
-    async def tprint(self, msg):
-        log.logger.info(
-            # f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
-            f"(THREAD{self.thread_count})> {msg}")
+    async def tprint(self, msg, level=0):
+        if level > 0:
+            log.logger.critical(f"(THREAD{self.thread_count})> {msg}")
+        else:
+            log.logger.info(
+                # f"(THREAD{self.thread_count}{str(id(self.thread_count))[-3:]})> {msg}")
+                f"(THREAD{self.thread_count})> {msg}")
 
     async def waiting_click(self, click_xpath, txt='', quiet=1, max_cnt=999):
         cnt = 0
@@ -80,6 +91,9 @@ class Srt():
     async def start(self, trgt_date=None, deptime=None, dep_station=None, des_station=None):
         if trgt_date is not None:
             await self.get_info(trgt_date, deptime, dep_station, des_station)
+        # if int(self.date) >= 20250124:
+        #     print("설기차표 열리기전이므로 종료합니다.")
+        #     return 0
 
         if self.start_now == 0:
             nowtime = int(datetime.now().strftime("%H%M"))
@@ -88,8 +102,8 @@ class Srt():
                     await self.tprint("종료합니다.")
                     return 0
                 nowtime = int(datetime.now().strftime("%H%M"))
-                if nowtime % 1 == 0:
-                    await asyncio.sleep(self.thread_count+3)
+                if nowtime % 5 == 0:
+                    await asyncio.sleep(self.thread_count*2)
                     print(f"({nowtime:04d}) SRT 대기중 {self.thread_count} : {self.info_txt_for_print}")
                     if len(Srt.chain_list) > 0 and self.thread_count == 1:
                         await asyncio.sleep(4)
@@ -102,6 +116,7 @@ class Srt():
                 if self.quit_now is True:
                     await self.tprint("종료합니다.")
                     return 0
+        await self.tprint(f"SRT매크로 실행 : {self.info_txt_for_print}")
         options = Options()
         options.add_argument("--incognito")  # 시크릿모드
 
@@ -132,14 +147,22 @@ class Srt():
         await self.select_menu()
         while (self.is_finish == False):
             is_success = await self.trying()
+        chain_num = 0
         while (len(Srt.chain_list) > 0):
-            if self == Srt.chain_list[0]:
+            if chain_num >= len(Srt.chain_list):
                 break
-            await self.close()
-            await self.tprint(f"체인실행 {Srt.chain_list[0].info_txt_for_print} (대기중인 체인 : {len(Srt.chain_list)-1})")
-            await Srt.chain_list[0].start()
-            await self.tprint(f"체인삭제 {Srt.chain_list[0].info_txt_for_print}")
-            del Srt.chain_list[0]
+            elif self == Srt.chain_list[chain_num]:
+                break
+            # await self.close()
+
+            if Srt.chain_list[chain_num].chain_is_running == True:
+                chain_num += 1
+                continue
+            Srt.chain_list[chain_num].chain_is_running = True
+            await self.tprint(f"체인실행({chain_num}) {Srt.chain_list[chain_num].info_txt_for_print} (대기중인 체인 : {len(Srt.chain_list)-1})")
+            await Srt.chain_list[chain_num].start()
+            await self.tprint(f"체인삭제({chain_num}) {Srt.chain_list[chain_num].info_txt_for_print}")
+            # del Srt.chain_list[chain_num]
         return is_success
 
     async def close(self):
@@ -158,23 +181,43 @@ class Srt():
         self.dep_time = dep_time
         self.dep = dep
         self.des = des
-        self.info_txt_for_print = f"{dep}->{des}, {dep_date}, {self.start_time}시"
+        if dep not in self.station_dic.keys():
+            self.dep = next((item for item in self.station_dic.keys() if dep in item), None)
+            if self.dep is None:
+                await self.tprint(f"SRT ERROR : {dep}를 등록해주세요", level=1)
+            await self.tprint(f"SRT {self.thread_count} : {dep}를 찾을 수 없어 출발역을 {self.dep}로 대체합니다. {self.info_txt_for_print}")
+        if des not in self.station_dic.keys():
+            self.des = next((item for item in self.station_dic.keys() if des in item), None)
+            if self.des is None:
+                await self.tprint(f"SRT ERROR : {des}를 등록해주세요", level=1)
+            await self.tprint(f"SRT {self.thread_count} : {des}를 찾을 수 없어 도착역을 {self.des}로 대체합니다. {self.info_txt_for_print}")
+        self.info_txt_for_print = f"{self.dep}->{self.des}, {dep_date}, {self.start_time}시, {self.notion_data['name']}, {self.notion_data['num_id']}"
 
         for s in self.station_dic.keys():
-            if dep in s:
+            if self.dep in s:
                 self.depature = self.station_dic[s] + 1
-                self.dep = s
                 break
         for s in self.station_dic.keys():
-            if des in s:
+            if self.des in s:
                 self.destination = self.station_dic[s] + 1
-                self.des = s
                 break
 
-        if self.run_from_log:
-            await self.tprint(f"재시도 : {self.info_txt_for_print}")
-        else:
-            await self.tprint(f"시도대기 : {self.info_txt_for_print}")
+        if 'memo' in self.notion_data:
+            self.memo = self.notion_data['memo']
+            self.info_txt_for_print += f", {self.memo}"
+            if "어린이만" in self.memo or "유아만" in self.memo:
+                self.age_type += ' childonly'
+                print(f"THREAD:{self.thread_count} 어린이만")
+            elif "어린이" in self.memo or "유아" in self.memo:
+                self.age_type += ' child'
+                print(f"THREAD:{self.thread_count} 어린이")
+            if "특실만" in self.memo:
+                self.VIP = '1'
+                print(f"THREAD:{self.thread_count} 특실only")
+            elif "특실" in self.memo:
+                self.VIP = '2'
+                print(f"THREAD:{self.thread_count} 특실+일반실")
+        await self.tprint(f"시도대기 : {self.info_txt_for_print}")
 
     async def select_menu(self):
         if self.quit_now is True:
@@ -195,10 +238,13 @@ class Srt():
         only_srt = self.driver.find_element(
             By.XPATH, '//*[@id="trnGpCd300"]').send_keys(Keys.SPACE)
         await asyncio.sleep(2)
-        Select(self.driver.find_element(
-            By.XPATH, '//*[@id="dptDt"]')).select_by_value(self.date)
-        Select(self.driver.find_element(
-            By.XPATH, '//*[@id="dptTm"]')).select_by_value(self.dep_time)
+        Select(self.driver.find_element(By.XPATH, '//*[@id="dptDt"]')).select_by_value(self.date)
+        Select(self.driver.find_element(By.XPATH, '//*[@id="dptTm"]')).select_by_value(self.dep_time)
+        if 'child' in self.age_type:
+            Select(self.driver.find_element(By.XPATH, '//*[@id="psgInfoPerPrnb5"]')).select_by_value('1')  # 1명 hard fix
+            if 'childonly' in self.age_type:
+                Select(self.driver.find_element(By.XPATH, '//*[@id="psgInfoPerPrnb1"]')).select_by_value('0')  # 어른 0명으로 변경
+
         search_btn = self.driver.find_element(
             By.XPATH, '//*[@id="search_top_tag"]/input').click()
         await asyncio.sleep(1)
@@ -223,7 +269,6 @@ class Srt():
 
     async def fill_payment1(self):
         await self.waiting_click('// *[ @ id = "list-form"] / fieldset / div[11] / a[1] / span', '"결제하기" 버튼')
-        # await self.waiting_click('//*[@id="select-form"]/fieldset/div[2]/ul/li[1]/a', '신용카드')
         await asyncio.sleep(1)
         await self.waiting_click('// *[ @ id = "stlCrCrdNo14_tk_btn"] / label', '보안키패드1 해제')
         await self.waiting_click('// *[ @ id = "vanPwd1_tk_btn"] / label', '보안키패드2 해제')
@@ -232,7 +277,6 @@ class Srt():
             By.XPATH, '//*[@id="crdVlidTrm1M"]')).select_by_value(self.card_info["exp_month"])
         sel_year = Select(self.driver.find_element(
             By.XPATH, '//*[@id="crdVlidTrm1Y"]')).select_by_value(self.card_info["exp_year"])
-        # await self.waiting_click('// *[ @ id = "agree1"]', '동의 체크박스')
         await self.waiting_click('// *[ @ id = "select-form"] / fieldset / div[11] / div[2] / ul / li[2] / a', '스마트폰 발권')
         await asyncio.sleep(1)
         self.driver.switch_to.alert.accept()
@@ -255,11 +299,20 @@ class Srt():
         await asyncio.sleep(1)
         self.driver.switch_to.alert.accept()
         await self.tprint(f"< 결제 완료 > {self.info_txt_for_print}")
-        # print("최종결제2")
-        # await asyncio.sleep(10)
-        # self.final_txt = self.driver.switch_to.alert.text
-        # print(self.final_txt)
-        # self.driver.switch_to.alert.accept()
+        status_msg = '발권완료'
+        if self.notion_data['seats'] > 1:
+            print("두자리")
+            cur_d = await async_read_database(api_key, db_id)
+            d_tup = next((d_tup for num_id, d_tup in cur_d.items() if num_id == self.notion_data['num_id']), None)
+            status = d_tup['status']
+            print(f"status test : {status}")
+            if status == '발권 전':
+                status_msg = '부분발권'
+        response_code = await update_page(api_key, self.notion_data['page_id'], status_msg)
+        if int(response_code) == 200:
+            await self.tprint(f"{self.notion_data['num_id']} {self.notion_data['name']}의 {self.notion_data['status']}를 {status_msg}로 변경하였습니다.")
+        else:
+            await self.tprint(f"(ERROR) {self.notion_data['num_id']} {self.notion_data['name']}의 {self.notion_data['status']}를 {status_msg}로 변경실패하였습니다.", level=1)
 
     async def success_process(self):
         # await asyncio.sleep(3)
@@ -282,7 +335,7 @@ class Srt():
                 row_list = self.driver.find_elements(
                     By.CSS_SELECTOR, '#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr')
         if not row_list:
-            print("조회버튼 다시누르기")
+            print(f"조회버튼 다시누르기 {self.thread_count}, {self.info_txt_for_print}")
             recheck_success = await self.waiting_click('//*[@id="search_top_tag"]/input', "다시 조회하기", max_cnt=10)
             if recheck_success == 0:
                 print("메뉴선택부터 다시")
@@ -343,6 +396,21 @@ class Srt():
                             waiting_seat_type = self.driver.find_element(
                                 By.XPATH, '//*[@id="list-form2"]/fieldset/div[3]/table/tbody/tr/td[1]').text
                             await self.tprint(f'<{waiting_seat_type} 예약대기 완료 > {self.info_txt_for_print}')
+
+                            status_msg = '예약대기'
+                            if self.notion_data['seats'] > 1:
+                                cur_d = await async_read_database(api_key, db_id)
+                                d_tup = next((d_tup for num_id, d_tup in cur_d.items() if num_id == self.notion_data['num_id']), None)
+                                status = d_tup['status']
+                                if status == '발권 전':
+                                    status_msg = '부분대기'
+                                    print(status_msg)
+                            response_code = await update_page(api_key, self.notion_data['page_id'], status_msg)
+                            if int(response_code) == 200:
+                                await self.tprint(f"{self.notion_data['num_id']} {self.notion_data['name']}의 {self.notion_data['status']}를 {status_msg}로 변경하였습니다.")
+                            else:
+                                await self.tprint(f"(ERROR) {self.notion_data['num_id']} {self.notion_data['name']}의 {self.notion_data['status']}를 {status_msg}로 변경실패하였습니다.", level=1)
+
                             # await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약대기 성공!")
 
                     except:
@@ -350,12 +418,12 @@ class Srt():
                         is_success = self.driver.find_element(
                             By.XPATH, '//*[@id="wrap"]/div[4]/div/div[1]/h2').text
                         if "예약하기" in is_success:
-                            await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약하기2 클릭 성공!")
+                            await self.tprint(f"row:{row}, {cur_time}시 도전 -> 예약하기(except라 뭔가 에러난것!) 클릭 성공!")
                             break
         except:
             pass
         if is_success != '':
-            print(f"is_success : {is_success}")
+            print(f"thread:{self.thread_count} is_success : {is_success}")
         if "예약하기" in is_success:
             try:
                 sold_out = self.driver.find_element(
@@ -376,7 +444,7 @@ class Srt():
                     except:
                         pass
             except:
-                print(f"is_success : {is_success}")
+                print(f"thread:{self.thread_count} except -> is_success : {is_success}")
                 await self.tprint("soldout html 못찾음")
                 await self.driver.refresh()
                 await asyncio.sleep(2)
@@ -388,7 +456,7 @@ class Srt():
                 # 이거 체크안해도 예약대기가 먹히긴함
                 info_text = self.driver.find_element(
                     By.XPATH, '//*[@id="wrap"]/div[4]/div/div[2]/div[4]').text
-                # await self.tprint(f'info_text : {info_text}')
+                # await self.tprint(f'thread:{self.thread_count} info_text : {info_text}')
                 if "예약대기" in info_text:
                     await self.waiting_click('//*[@id="agree"]', "개인정보수집동의")
                     await self.waiting_click('//*[@id="smsY"]', "SMS동의")
@@ -427,7 +495,7 @@ class Srt():
                 self.interval, self.interval+1)) + '.' + str(random.randint(1, 3)))
             await asyncio.sleep(ran_time)
             self.driver.refresh()
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
         if self.start_now == 0:
             nowtime = int(datetime.now().strftime("%H%M"))
             if (nowtime > int(self.macro_run_time['end'])):

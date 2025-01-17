@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+from mylog import MyLog
+from datetime import datetime
+import re
+import sys
 import time
 import random
 from selenium import webdriver
@@ -13,14 +17,14 @@ from selenium.webdriver.support import expected_conditions as ec
 from user_agent import generate_user_agent, generate_navigator
 import json
 import asyncio
+from to_notion import *
 
 with open("config.json") as f:
     conf = json.load(f)
 
-import sys
-import re
-from datetime import datetime
-from mylog import MyLog
+
+api_key = conf["NOTION_API_KEY"]  # Notion  API 키
+db_id = conf["NOTION_DB_ID"]
 log = MyLog("ktx", "INFO")
 
 
@@ -33,8 +37,9 @@ class Ktx():
         self.class_type_txt = {'2': "특실+일반실", '1': "특실", '0': "일반실"}
         self.start_time_txt = {'1': "지금바로", '0': "새벽3시"}
         self.class_type = {'2': [6, 7], '1': [6], '0': [7]}
-        self.station_dic = {'수서': 0, '동탄': 1, '평택지제': 2, '광주송정': 5, '김천구미': 7, '대전': 10, '동대구': 11,
-                            '목포': 13, '부산': 15, '신경주': 18, '오송': 21, '익산': 23, '전주': 24, '천안아산': 30, '포항': 31}
+        self.station_list = {'서울', '용산', '영등포', '광명', '수원', '천안아산', '오송',
+                             '대전', '서대전', '김천구미', '동대구', '경주', '포항', '밀양', '구포', '부산', '울산(통도사)',
+                             '마산', '창원중앙', '경산', '논산', '익산', '정읍', '광주송정', '목포', '전주', '순천', '청량리', '강릉', '행신', '정동진', '안동'}
         self.id = conf["KTX_ID"]
         self.pw = conf["KTX_PW"]
         self.card_info = conf["CARD_INFO"]
@@ -55,8 +60,11 @@ class Ktx():
         self.quit_now = False
         self.waiting = 0
         self.info_txt_for_print = ''
-        self.run_from_log = 0
         self.non_ktx_list = [["수원", "창원중앙"]]
+        self.notion_data = None
+        self.chain_is_running = False
+        self.age_type = 'man'
+        self.memo = ''
 
     async def tprint(self, msg):
         log.logger.info(
@@ -90,8 +98,8 @@ class Ktx():
                     await self.tprint("종료합니다.")
                     return 0
                 nowtime = int(datetime.now().strftime("%H%M"))
-                if nowtime % 1 == 0:
-                    await asyncio.sleep(self.thread_count+13)
+                if nowtime % 5 == 0:
+                    await asyncio.sleep(self.thread_count+16)
                     print(f"({nowtime:04d}) KTX 대기중 {self.thread_count} : {self.info_txt_for_print}")
                     if len(Ktx.chain_list) > 0 and self.thread_count == 1:
                         await asyncio.sleep(4)
@@ -104,6 +112,7 @@ class Ktx():
                 if self.quit_now is True:
                     await self.tprint("종료합니다.")
                     return 0
+        await self.tprint(f"KTX매크로 실행 : {self.info_txt_for_print}")
         options = Options()
         options.add_argument("--incognito")  # 시크릿모드
 
@@ -116,20 +125,30 @@ class Ktx():
         self.driver.maximize_window()
         self.driver.get(self.ktx_home)
 
-        # login
-        await self.login()
+        is_logined = await self.login()
+        if "로그아웃" not in is_logined:
+            await self.tprint(f"TH:{self.thread_count} 로그인실패로 다시 로그인합니다")
+            self.driver.get(self.ktx_home)
+            is_logined = await self.login()
 
         await self.select_menu()
         while (self.is_finish == False):
             is_success = await self.trying()
+        chain_num = 0
         while (len(Ktx.chain_list) > 0):
-            if self == Ktx.chain_list[0]:
+            if chain_num >= len(Ktx.chain_list):
                 break
-            await self.close()
-            await self.tprint(f"체인실행 {Ktx.chain_list[0].info_txt_for_print} (대기중인 체인 : {len(Ktx.chain_list)-1})")
-            await Ktx.chain_list[0].start()
-            await self.tprint(f"체인삭제 {Ktx.chain_list[0].info_txt_for_print}")
-            del Ktx.chain_list[0]
+            if self == Ktx.chain_list[chain_num]:
+                break
+            # await self.close()
+            if Ktx.chain_list[chain_num].chain_is_running == True:
+                chain_num += 1
+                continue
+            Ktx.chain_list[chain_num].chain_is_running = True
+            await self.tprint(f"체인실행({chain_num}) {Ktx.chain_list[chain_num].info_txt_for_print} (대기중인 체인 : {len(Ktx.chain_list)-1})")
+            await Ktx.chain_list[chain_num].start()
+            await self.tprint(f"체인삭제({chain_num}) {Ktx.chain_list[chain_num].info_txt_for_print}")
+            # del Ktx.chain_list[0]
         return is_success
 
     async def login(self):
@@ -141,8 +160,15 @@ class Ktx():
             By.XPATH, '//*[@id="txtMember"]').send_keys(self.id)
         self.driver.find_element(
             By.XPATH, '//*[@id="txtPwd"]').send_keys(self.pw)
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
         await self.waiting_click('//*[@id="loginDisplay1"]/ul/li[3]/a/img', "로그인 시도")
+        await asyncio.sleep(1)
+        try:
+            is_logined = self.driver.find_element(By.XPATH, f'//*[@id="header"]/div[1]/div/ul/li[3]/a/img').get_attribute('alt')
+            return is_logined
+
+        except:
+            return 0
 
     async def close(self):
         try:
@@ -165,11 +191,27 @@ class Ktx():
         self.target_time = dep_time
         self.dep = dep
         self.des = des
-        self.info_txt_for_print = f"{dep}->{des}, {dep_date}, {self.start_time}시"
-        if self.run_from_log:
-            await self.tprint(f"재시도 : {self.info_txt_for_print}")
-        else:
-            await self.tprint(f"시도대기 : {self.info_txt_for_print}")
+        if dep not in self.station_list:
+            self.dep = next((item for item in self.station_list if dep in item), None)
+            if self.dep is None:
+                await self.tprint(f"KTX ERROR : {dep}를 등록해주세요", level=1)
+            await self.tprint(f"KTX {self.thread_count} : {dep}를 찾을 수 없어 출발역을 {self.dep}로 대체합니다. {self.info_txt_for_print}")
+        if des not in self.station_list:
+            self.des = next((item for item in self.station_list if des in item), None)
+            if self.des is None:
+                await self.tprint(f"KTX ERROR : {des}를 등록해주세요", level=1)
+            await self.tprint(f"KTX {self.thread_count} : {des}를 찾을 수 없어 도착역을 {self.des}로 대체합니다. {self.info_txt_for_print}")
+        self.info_txt_for_print = f"{self.dep}->{self.des}, {dep_date}, {self.start_time}시, {self.notion_data['name']}, {self.notion_data['num_id']}"
+        if 'memo' in self.notion_data:
+            self.memo = self.notion_data['memo']
+            self.info_txt_for_print += f", {self.memo}"
+            if "특실만" in self.memo:
+                self.VIP = '1'
+                print(f"THREAD:{self.thread_count} 특실only")
+            elif "특실" in self.memo:
+                self.VIP = '2'
+                print(f"THREAD:{self.thread_count} 특실+일반실")
+        await self.tprint(f"시도대기 : {self.info_txt_for_print}")
 
     async def select_menu(self):
         if self.quit_now is True:
@@ -247,40 +289,75 @@ class Ktx():
             elif 'SRT' in seat_info_list[1]:
                 continue
             dep_time = seat_info_list[4][:2]
-            if int(dep_time) not in self.start_time:
+            if not dep_time.isdigit():
+                continue
+            elif int(dep_time) not in self.start_time:
                 continue
             try:
                 # seat_status = self.driver.find_element(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{}]/td[6]').accessible_name
-                grade = 5
-                if int(self.VIP) == 0:
-                    grade = 6
+                grade = 6
+                if int(self.VIP) == 1:
+                    grade = 5
+
                 status = self.driver.find_element(
                     By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{i+1}]/td[{grade}]/a[1]/img').get_attribute('alt')
                 if "예약하기" not in status:
                     continue
                 self.driver.find_element(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{i+1}]/td[{grade}]/a[1]/img').click()
+
             except:
+                try:
+                    if int(self.VIP) == 2:  # 특실 추가 시도
+                        status = self.driver.find_element(
+                            By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{i+1}]/td[{5}]/a[1]/img').get_attribute('alt')
+                        if "예약하기" not in status:
+                            continue
+                        self.driver.find_element(By.XPATH, f'//*[@id="tableResult"]/tbody/tr[{i+1}]/td[{5}]/a[1]/img').click()
+                except:
+                    pass
                 # 매진
                 # print(f'{seat_info_list[4]}는 매진입니다')
                 continue
 
             await self.tprint(f"< 예매 성공 > {self.info_txt_for_print}")
+
+            for i in range(2):
+                try:
+                    # self.driver.switch_to.frame(0)
+                    await asyncio.sleep(0.5)
+                    iframe = self.driver.find_element("id", "embeded-modal-traininfo")
+                    self.driver.switch_to.frame(iframe)
+                    await self.waiting_click('/html/body/div/div[2]/p[3]/a', "산천 팝업창", max_cnt=3, quiet=0)
+                    print("산천팝업")
+                    await self.tprint(f"TH:{self.thread_count} 산천팝업")
+                    self.driver.switch_to.default_content()
+                    await self.tprint(f"TH:{self.thread_count} 산천디폴트")
+                    print("산천팝업 디폴트")
+                except:
+                    print("산천 팝업창이 안떠서 팝업창해제를 스킵합니다")
+                    # await self.tprint("산천 팝업창이 안떠서 팝업창해제를 스킵합니다")
+                    pass
+
             try:
-                self.driver.switch_to.frame(0)
-                await self.waiting_click('/html/body/div/div[2]/p[3]/a', "산천 팝업창", max_cnt=3)
-                # print("산천팝업")
-                self.driver.switch_to.default_content()
-                # print("산천팝업 디폴트")
+                await asyncio.sleep(1)
+                res = self.driver.find_element(By.XPATH, '//*[@id = "contents"]/div[1]/div[2]/div').text
+                if "동일한 예약" in res:
+                    await self.tprint(res)
+                    return 0
             except:
-                # await self.tprint("산천 팝업창이 안떠서 팝업창해제를 스킵합니다")
-                pass
+                pass  # 정상진행
+            await asyncio.sleep(1)
+
             try:
                 await asyncio.sleep(1)
                 self.driver.switch_to.alert.accept()
+                print("동의 1번 성공")
                 await asyncio.sleep(1)
                 self.driver.switch_to.alert.accept()
+                print("동의 2번 성공")
                 await asyncio.sleep(1)
                 self.driver.switch_to.alert.accept()
+                print("동의 3번 성공")
             except:
                 pass
             await asyncio.sleep(2)
@@ -319,6 +396,21 @@ class Ktx():
             await asyncio.sleep(2)
             self.driver.switch_to.alert.accept()
             await self.tprint(f"< 결제 완료 > {self.info_txt_for_print}")
+
+            status_msg = '발권완료'
+            if self.notion_data['seats'] > 1:
+                cur_d = await async_read_database(api_key, db_id)
+                d_tup = next((d_tup for num_id, d_tup in cur_d.items() if num_id == self.notion_data['num_id']), None)
+                status = d_tup['status']
+                if status == '발권 전':
+                    status_msg = '부분발권'
+                    print(status_msg)
+            response_code = await update_page(api_key, self.notion_data['page_id'], status_msg)
+            if int(response_code) == 200:
+                await self.tprint(f"{self.notion_data['num_id']} {self.notion_data['name']}의 {self.notion_data['status']}를 {status_msg}로 변경하였습니다.")
+            else:
+                await self.tprint(f"(ERROR) {self.notion_data['num_id']} {self.notion_data['name']}의 {self.notion_data['status']}를 {status_msg}로 변경실패하였습니다.", level=1)
+
             await asyncio.sleep(2)
             self.is_finish = True
             # self.driver.quit()

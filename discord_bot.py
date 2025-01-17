@@ -15,13 +15,13 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import subprocess
-from to_notion import create_page
+from to_notion import *
 
 with open("config.json") as f:
     conf = json.load(f)
 
 api_key = conf["NOTION_API_KEY"]  # Notion  API 키
-db_id = '1631f0291d2980de988bd6d131448157'  # 기차표 노션 페이지
+db_id = conf["NOTION_DB_ID"]
 now = datetime.datetime.now()
 log = MyLog("discord", "INFO")
 intents = discord.Intents.all()
@@ -33,7 +33,7 @@ c = {'dep_station': None, 'des_station': None, 'trgt_date': None,
 srt_short_station_dict = {'수서': 0, '동탄': 1, '평택지제': 2, '창원': 28, '광주송정': 6,  '김천구미': 8,
                           '대전': 11, '동대구': 12,   '부산': 16, '전주': 24,
                           '오송': 21, '익산': 23, '울산(통도사)': 22,  '천안아산': 30, '포항': 31,
-                          '목포': 14, '진영': 26}
+                          '목포': 14, '진영': 26, '경주': 3, '진주': 27, '나주': 9}
 
 ktx_station_dict = {'서울': 0, '용산': 1, '영등포': 2, '광명': 3,  '수원': 4,
                     '천안아산': 5, '오송': 6, '대전': 7, '김천구미': 9,
@@ -203,8 +203,12 @@ class MyBtn(Button):
                                   '좌석수': 1,
                                   '정산': "발권 전",
                                   '비고': '디스코드'}
-                if create_page(api_key, db_id, to_notion_data) == 200:
+
+                create_result = await create_page(api_key, db_id, to_notion_data)
+                if create_result == 200:
                     log.logger.info(f"노션 등록 완료 : {to_notion_data}")
+                    srt_dict[self.cur_thread].notion_data = {'num_id': num_id, 'status': status,
+                                                             'page_id': d['page_id'], 'name': d['name'], 'seats': d['seats']}
                 if srt_thread_cnt <= max_window:
                     log.logger.info(f"Srt Thread Count : {self.cur_thread}")
                     is_success = await srt_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
@@ -238,8 +242,11 @@ class MyBtn(Button):
                                   '좌석수': 1,
                                   '정산': "발권 전",
                                   '비고': "디스코드"}
-                if create_page(api_key, db_id, to_notion_data) == 200:
+                create_result = create_page(api_key, db_id, to_notion_data)
+                if create_result == 200:
                     log.logger.info(f"노션 등록 완료 : {to_notion_data}")
+                    ktx_dict[self.cur_thread].notion_data = {'num_id': num_id, 'status': status,
+                                                             'page_id': d['page_id'], 'name': d['name'], 'seats': d['seats']}
                 if ktx_thread_cnt <= max_window:
                     log.logger.info(f"Ktx Thread Count : {self.cur_thread}")
                     is_success = await ktx_dict[self.cur_thread].start(c['trgt_date'], deptime, c['dep_station'], c['des_station'])
@@ -544,111 +551,250 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         start_now = int(sys.argv[1])
 
-    srt_from_log_dict = {}
-    ktx_from_log_dict = {}
+    # srt_from_log_dict = {}
+    # ktx_from_log_dict = {}
+    # with open("srt.log", "r", encoding="utf-8") as file:
+    #     for line in file:
+    #         if "시도대기" in line:
+    #             matches = re.findall(r"시도대기 : (.*)시", line.strip())
+    #             if matches[0] not in srt_from_log_dict:
+    #                 srt_from_log_dict[matches[0]] = {'try': 1, 'success': 0, 'cancel': 0, 'finish': 0}
+    #             else:
+    #                 srt_from_log_dict[matches[0]]['try'] += 1
+    #         elif "< 결제 완료 >" in line or "일반실 예약대기 완료 >" in line:
+    #             matches = re.findall(r"완료 > (.*)시", line.strip())
+    #             srt_from_log_dict[matches[0]]['finish'] += 1
+    #         elif "< 취소 >" in line:
+    #             matches = re.findall(r"취소 > (.*)시", line.strip())
+    #             srt_from_log_dict[matches[0]]['cancel'] += 1
+
+    # with open("ktx.log", "r", encoding="utf-8") as file:
+    #     for line in file:
+    #         if "시도대기" in line:
+    #             matches = re.findall(r"시도대기 : (.*)시", line.strip())
+    #             if matches[0] not in ktx_from_log_dict:
+    #                 ktx_from_log_dict[matches[0]] = {'try': 1, 'success': 0, 'cancel': 0, 'finish': 0}
+    #             else:
+    #                 ktx_from_log_dict[matches[0]]['try'] += 1
+    #         elif "< 결제 완료 >" in line or "일반실 예약대기 완료 >" in line:
+    #             matches = re.findall(r"완료 > (.*)시", line.strip())
+    #             ktx_from_log_dict[matches[0]]['finish'] += 1
+    #         elif "< 취소 >" in line:
+    #             matches = re.findall(r"취소 > (.*)시", line.strip())
+    #             ktx_from_log_dict[matches[0]]['cancel'] += 1
+
+    # with open("srt.log", "r", encoding="utf-8") as file:
+    #     for line in file:
+    #         if "< 예매 성공 > " in line:
+    #             matches = re.findall(r"< 예매 성공 > (.*)시", line.strip())
+    #             srt_from_log_dict[matches[0]]['success'] += 1
+
+    # with open("ktx.log", "r", encoding="utf-8") as file:
+    #     for line in file:
+    #         if "< 예매 성공 > " in line:
+    #             matches = re.findall(r"< 예매 성공 > (.*)시", line.strip())
+    #             ktx_from_log_dict[matches[0]]['success'] += 1
+
+    # for k, v in srt_from_log_dict.items():
+    #     run_cnt = 0
+    #     if v['try'] - v['cancel'] > v['finish']:
+    #         run_cnt = v['try'] - v['finish']
+    #         if v['finish']-v['success'] != 0:
+    #             log.logger.info(f"(SRT) 총 {v['try']}건의 시도중 {v['finish']}건 성공(결제실패 {v['success']-v['finish']}건)했으므로 다시 시도합니다 {k}")
+    #         else:
+    #             log.logger.info(f"(SRT) 총 {v['try']}건의 시도중 {v['finish']}건 성공했으므로 다시 시도합니다 {k}")
+    #         matches = re.findall(r"(\S+)->(\S+), (\d+), (\[[\d, ]+\])", k)[0]
+    #         dep = matches[0]
+    #         des = matches[1]
+    #         dep_date = matches[2]
+    #         trgt_time_list = json.loads(matches[3])
+    #         for _ in range(run_cnt):
+    #             srt_thread_cnt += 1
+    #             dep_time = str(trgt_time_list[0] - (trgt_time_list[0] % 2)).zfill(2) + '0000'
+    #             srt_dict[srt_thread_cnt] = Srt(srt_thread_cnt)
+    #             srt_dict[srt_thread_cnt].start_time = trgt_time_list
+    #             srt_dict[srt_thread_cnt].start_now = start_now
+    #             srt_dict[srt_thread_cnt].run_from_log = 1
+
+    #             if srt_thread_cnt <= max_window:
+    #                 tasks.append(srt_dict[srt_thread_cnt].start(dep_date, dep_time, dep, des))
+    #             else:
+    #                 log.logger.info(
+    #                     f"(SRT)   Thread Count : {srt_thread_cnt}라서 체인으로 실행(run_from_log) {k}")
+    #                 tasks.insert(0, srt_dict[srt_thread_cnt].get_info(dep_date, dep_time, dep, des))
+    #                 Srt.chain_list.append(srt_dict[srt_thread_cnt])
+    #     elif v['try'] > 0:
+    #         print(f"(SRT INFO) {k}는 {v['try']}번 발권내역이 있습니다.")
+
+    # for k, v in ktx_from_log_dict.items():
+    #     run_cnt = 0
+    #     if v['try'] - v['cancel'] > v['finish']:
+    #         run_cnt = v['try'] - v['finish']
+    #         if v['finish']-v['success'] != 0:
+    #             log.logger.info(f"(KTX) 총 {v['try']}건의 시도중 {v['finish']}건 성공(결제실패 {v['success']-v['finish']}건)했으므로 다시 시도합니다 {k}")
+    #         else:
+    #             log.logger.info(f"(KTX) 총 {v['try']}건의 시도중 {v['finish']}건 성공했으므로 다시 시도합니다 {k}")
+    #         matches = re.findall(r"(\S+)->(\S+), (\d+), (\[[\d, ]+\])", k)[0]
+    #         dep = matches[0]
+    #         des = matches[1]
+    #         dep_date = matches[2]
+    #         trgt_time_list = json.loads(matches[3])
+    #         for _ in range(run_cnt):
+    #             ktx_thread_cnt += 1
+    #             dep_time = str(trgt_time_list[0])
+    #             ktx_dict[ktx_thread_cnt] = Ktx(ktx_thread_cnt)
+    #             ktx_dict[ktx_thread_cnt].start_time = trgt_time_list
+    #             ktx_dict[ktx_thread_cnt].start_now = start_now
+    #             ktx_dict[ktx_thread_cnt].run_from_log = 1
+
+    #             if ktx_thread_cnt <= max_window:
+    #                 tasks.append(ktx_dict[ktx_thread_cnt].start(dep_date, dep_time, dep, des))
+    #             else:
+    #                 log.logger.info(
+    #                     f"(KTX)   Thread Count : {ktx_thread_cnt}라서 체인으로 실행(run_from_log) {k}")
+    #                 tasks.insert(0, ktx_dict[ktx_thread_cnt].get_info(dep_date, dep_time, dep, des))
+    #                 Ktx.chain_list.append(ktx_dict[ktx_thread_cnt])
+    #     elif v['try'] > 0:
+    #         print(f"(KTX INFO) {k}는 {v['try']}번 발권내역이 있습니다.")
+
+    need_conf_update = False
     with open("srt.log", "r", encoding="utf-8") as file:
         for line in file:
-            if "시도대기" in line:
-                matches = re.findall(r"시도대기 : (.*)시", line.strip())
-                if matches[0] not in srt_from_log_dict:
-                    srt_from_log_dict[matches[0]] = {'try': 1, 'success': 0, 'cancel': 0, 'finish': 0}
-                else:
-                    srt_from_log_dict[matches[0]]['try'] += 1
-            elif "< 결제 완료 >" in line or "일반실 예약대기 완료 >" in line:
-                matches = re.findall(r"완료 > (.*)시", line.strip())
-                srt_from_log_dict[matches[0]]['finish'] += 1
-            elif "< 취소 >" in line:
-                matches = re.findall(r"취소 > (.*)시", line.strip())
-                srt_from_log_dict[matches[0]]['cancel'] += 1
-
+            if "예약대기 완료" in line:
+                exceuted_time = line.split()[1]
+                if conf['SRT_RES_MIN'] > exceuted_time:
+                    log.logger.info(f"(SRT 예약대기 history) Min : {conf['SRT_RES_MIN']} -> {exceuted_time}")
+                    conf['SRT_RES_MIN'] = exceuted_time
+                    need_conf_update = True
+                if conf['SRT_RES_MAX'] < exceuted_time and exceuted_time < '05:55:55,555':
+                    log.logger.info(f"(SRT 예약대기 history) Max : {conf['SRT_RES_MAX']} -> {exceuted_time}")
+                    conf['SRT_RES_MAX'] = exceuted_time
+                    need_conf_update = True
+            elif "결제 완료" in line:
+                exceuted_time = line.split()[1]
+                if conf['SRT_BUY_MIN'] > exceuted_time:
+                    log.logger.info(f"(SRT 취소표 history) Min : {conf['SRT_BUY_MIN']} -> {exceuted_time}")
+                    conf['SRT_BUY_MIN'] = exceuted_time
+                    need_conf_update = True
+                if conf['SRT_BUY_MAX'] < exceuted_time and exceuted_time < '05:55:55,555':
+                    log.logger.info(f"(SRT 취소표 history) Max : {conf['SRT_BUY_MAX']} -> {exceuted_time}")
+                    conf['SRT_BUY_MAX'] = exceuted_time
+                    need_conf_update = True
     with open("ktx.log", "r", encoding="utf-8") as file:
         for line in file:
-            if "시도대기" in line:
-                matches = re.findall(r"시도대기 : (.*)시", line.strip())
-                if matches[0] not in ktx_from_log_dict:
-                    ktx_from_log_dict[matches[0]] = {'try': 1, 'success': 0, 'cancel': 0, 'finish': 0}
-                else:
-                    ktx_from_log_dict[matches[0]]['try'] += 1
-            elif "< 결제 완료 >" in line or "일반실 예약대기 완료 >" in line:
-                matches = re.findall(r"완료 > (.*)시", line.strip())
-                ktx_from_log_dict[matches[0]]['finish'] += 1
-            elif "< 취소 >" in line:
-                matches = re.findall(r"취소 > (.*)시", line.strip())
-                ktx_from_log_dict[matches[0]]['cancel'] += 1
+            if "결제 완료" in line:
+                exceuted_time = line.split()[1]
+                if conf['KTX_BUY_MIN'] > exceuted_time:
+                    log.logger.info(f"(KTX 취소표 history) Min : {conf['KTX_BUY_MIN']} -> {exceuted_time}")
+                    conf['KTX_BUY_MIN'] = exceuted_time
+                    need_conf_update = True
+                if conf['KTX_BUY_MAX'] < exceuted_time and exceuted_time < '05:55:55,555':
+                    log.logger.info(f"(KTX 취소표 history) Max : {conf['KTX_BUY_MAX']} -> {exceuted_time}")
+                    conf['KTX_BUY_MAX'] = exceuted_time
+                    need_conf_update = True
+    if need_conf_update:
+        with open("config.json", "w") as f:
+            json.dump(conf, f, indent=4)
 
-    with open("srt.log", "r", encoding="utf-8") as file:
-        for line in file:
-            if "< 예매 성공 > " in line:
-                matches = re.findall(r"< 예매 성공 > (.*)시", line.strip())
-                srt_from_log_dict[matches[0]]['success'] += 1
+    notion_data_pre = read_database(api_key, db_id)
+    notion_data_pre = sorted(notion_data_pre.items(),        key=lambda x: (x[1]['date'], x[1]['type']))
+    import random
+    random.shuffle(notion_data_pre)
 
-    with open("ktx.log", "r", encoding="utf-8") as file:
-        for line in file:
-            if "< 예매 성공 > " in line:
-                matches = re.findall(r"< 예매 성공 > (.*)시", line.strip())
-                ktx_from_log_dict[matches[0]]['success'] += 1
+    notion_data = []
+    latest_date = None
+    multiple_seat_list = []
+    ktx_start_num = sum(1 for item in notion_data_pre if item[1]['type'] == 'srt')
+    for i, d_tup in enumerate(notion_data_pre):
+        num_id = d_tup[0]
+        d = d_tup[1]
+        status = d['status']
+        if i == ktx_start_num:
+            latest_date = None
+            if len(multiple_seat_list) > 0:
+                notion_data.extend(multiple_seat_list.copy())
+                multiple_seat_list = []
 
-    for k, v in srt_from_log_dict.items():
-        run_cnt = 0
-        if v['try'] - v['cancel'] > v['finish']:
-            run_cnt = v['try'] - v['finish']
-            if v['finish']-v['success'] != 0:
-                log.logger.info(f"(SRT) 총 {v['try']}건의 시도중 {v['finish']}건 성공(결제실패 {v['success']-v['finish']}건)했으므로 다시 시도합니다 {k}")
+        if status == '발권 전' or status == '부분발권':
+            dep_date = d['date'].replace('-', '')
+            if latest_date is None:
+                latest_date = dep_date
+
+            if d['seats'] > 1:
+                for k in range(d['seats']-1-(d['status'] == '부분발권')):
+                    multiple_seat_list.append(d_tup)
+            elif (latest_date < dep_date) and len(multiple_seat_list) > 0:
+                notion_data.extend(multiple_seat_list.copy())
+                multiple_seat_list = []
+
+            if i == len(notion_data_pre)-1 and len(multiple_seat_list) > 0:
+                notion_data.extend(multiple_seat_list.copy())
+            notion_data.append(d_tup)
+            latest_date = dep_date
+
+    high_priority_list = []
+    for i, d_tup in enumerate(notion_data):
+        if 'memo' not in d_tup[1]:
+            continue
+        if '우선' in d_tup[1]['memo']:
+            high_priority_list.append(d_tup)
+    for h in high_priority_list:
+        notion_data.remove(h)  # 기존 위치에서 제거
+        notion_data.insert(0, h)  # 맨 앞에 삽입
+
+    for i, d_tup in enumerate(notion_data):
+        num_id = d_tup[0]
+        d = d_tup[1]
+        status = d['status']
+
+        if status == '발권 전' or status == '부분발권':
+            # print(d)
+            dep = d['dep']
+            des = d['des']
+            dep_date = d['date'].replace('-', '')
+            if '-' in d['time'] or '~' in d['time']:
+                start, end = map(int, d['time'].split('-'))
+                trgt_time_list = list(range(start, end + 1))
             else:
-                log.logger.info(f"(SRT) 총 {v['try']}건의 시도중 {v['finish']}건 성공했으므로 다시 시도합니다 {k}")
-            matches = re.findall(r"(\S+)->(\S+), (\d+), (\[[\d, ]+\])", k)[0]
-            dep = matches[0]
-            des = matches[1]
-            dep_date = matches[2]
-            trgt_time_list = json.loads(matches[3])
-            for _ in range(run_cnt):
+                trgt_time_list = [int(d['time'])]
+            cur_notion_data = {'num_id': num_id, 'status': status, 'page_id': d['page_id'], 'name': d['name'], 'seats': d['seats']}
+            if 'memo' in d:
+                cur_notion_data['memo'] = d['memo']
+
+            if d['type'] == 'srt':
                 srt_thread_cnt += 1
                 dep_time = str(trgt_time_list[0] - (trgt_time_list[0] % 2)).zfill(2) + '0000'
                 srt_dict[srt_thread_cnt] = Srt(srt_thread_cnt)
                 srt_dict[srt_thread_cnt].start_time = trgt_time_list
                 srt_dict[srt_thread_cnt].start_now = start_now
-                srt_dict[srt_thread_cnt].run_from_log = 1
+                srt_dict[srt_thread_cnt].notion_data = cur_notion_data
 
                 if srt_thread_cnt <= max_window:
                     tasks.append(srt_dict[srt_thread_cnt].start(dep_date, dep_time, dep, des))
+                    log.logger.info(
+                        f"(SRT)   Thread Count : {srt_thread_cnt}, 매크로 등록 {num_id} : {d['name']}, {d['dep']}->{d['des']}, {d['date']}, {trgt_time_list}시")
                 else:
                     log.logger.info(
-                        f"(SRT)   Thread Count : {srt_thread_cnt}라서 체인으로 실행(run_from_log) {k}")
+                        f"(SRT)   Thread Count : {srt_thread_cnt}, 체인으로 등록 {num_id} : {d['name']}, {d['dep']}->{d['des']}, {d['date']}, {trgt_time_list}시")
                     tasks.insert(0, srt_dict[srt_thread_cnt].get_info(dep_date, dep_time, dep, des))
                     Srt.chain_list.append(srt_dict[srt_thread_cnt])
-        elif v['try'] > 0:
-            print(f"(SRT INFO) {k}는 {v['try']}번 발권내역이 있습니다.")
-
-    for k, v in ktx_from_log_dict.items():
-        run_cnt = 0
-        if v['try'] - v['cancel'] > v['finish']:
-            run_cnt = v['try'] - v['finish']
-            if v['finish']-v['success'] != 0:
-                log.logger.info(f"(KTX) 총 {v['try']}건의 시도중 {v['finish']}건 성공(결제실패 {v['success']-v['finish']}건)했으므로 다시 시도합니다 {k}")
             else:
-                log.logger.info(f"(KTX) 총 {v['try']}건의 시도중 {v['finish']}건 성공했으므로 다시 시도합니다 {k}")
-            matches = re.findall(r"(\S+)->(\S+), (\d+), (\[[\d, ]+\])", k)[0]
-            dep = matches[0]
-            des = matches[1]
-            dep_date = matches[2]
-            trgt_time_list = json.loads(matches[3])
-            for _ in range(run_cnt):
                 ktx_thread_cnt += 1
                 dep_time = str(trgt_time_list[0])
                 ktx_dict[ktx_thread_cnt] = Ktx(ktx_thread_cnt)
                 ktx_dict[ktx_thread_cnt].start_time = trgt_time_list
                 ktx_dict[ktx_thread_cnt].start_now = start_now
-                ktx_dict[ktx_thread_cnt].run_from_log = 1
+                ktx_dict[ktx_thread_cnt].notion_data = cur_notion_data
 
                 if ktx_thread_cnt <= max_window:
                     tasks.append(ktx_dict[ktx_thread_cnt].start(dep_date, dep_time, dep, des))
+                    log.logger.info(
+                        f"(KTX)   Thread Count : {ktx_thread_cnt}, 매크로 등록 {num_id} : {d['name']}, {d['dep']}->{d['des']}, {d['date']}, {trgt_time_list}시")
                 else:
                     log.logger.info(
-                        f"(KTX)   Thread Count : {ktx_thread_cnt}라서 체인으로 실행(run_from_log) {k}")
+                        f"(KTX)   Thread Count : {ktx_thread_cnt}, 체인으로 등록 {num_id} : {d['name']}, {d['dep']}->{d['des']}, {d['date']}, {trgt_time_list}시")
                     tasks.insert(0, ktx_dict[ktx_thread_cnt].get_info(dep_date, dep_time, dep, des))
                     Ktx.chain_list.append(ktx_dict[ktx_thread_cnt])
-        elif v['try'] > 0:
-            print(f"(KTX INFO) {k}는 {v['try']}번 발권내역이 있습니다.")
 
     asyncio.run(main())
 
